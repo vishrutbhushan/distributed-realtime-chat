@@ -1,0 +1,116 @@
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Milestone 1: single app node + LLM server + client runner
+#
+# For Milestone 2 (Raft), duplicate app-node-1 into app-node-2..5 and set
+# PEERS appropriately.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── LLM server ─────────────────────────────────────────────────────────────
+  llm-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.llm
+    container_name: llm-server
+    ports:
+      - "50060:50060"
+    environment:
+      LLM_PORT: "50060"
+    networks:
+      - chat-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import grpc; import sys; sys.path.insert(0,'generated');\
+              import llm_pb2_grpc, llm_pb2;\
+              ch=grpc.insecure_channel('localhost:50060');\
+              stub=llm_pb2_grpc.LLMServiceStub(ch);\
+              stub.GetLLMAnswer(llm_pb2.LLMRequest(request_id='hc',query='ping',feature='SMART_REPLY'))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── App node 1 (Milestone 1: STANDALONE) ───────────────────────────────────
+  app-node-1:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    container_name: app-node-1
+    ports:
+      - "50051:50051"
+    environment:
+      NODE_ID:           "node-1"
+      PORT:              "50051"
+      DB_PATH:           "/data/chat.db"
+      FILE_STORAGE_PATH: "/data/files/"
+      LLM_SERVER:        "llm-server:50060"
+      # PEERS: ""   # comma-separated peer addresses for Milestone 2
+    volumes:
+      - node1-data:/data
+    depends_on:
+      llm-server:
+        condition: service_healthy
+    networks:
+      - chat-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import grpc; import sys; sys.path.insert(0,'generated');\
+              import chat_pb2_grpc, chat_pb2;\
+              ch=grpc.insecure_channel('localhost:50051');\
+              stub=chat_pb2_grpc.ChatServiceStub(ch);\
+              stub.GetNodeStatus(chat_pb2.GetNodeStatusRequest())"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ── Client runner (automated demo) ─────────────────────────────────────────
+  client-runner:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    container_name: client-runner
+    environment:
+      APP_SERVER: "app-node-1:50051"
+    command: ["python", "client/client.py", "--server", "app-node-1:50051", "--demo"]
+    depends_on:
+      app-node-1:
+        condition: service_healthy
+    networks:
+      - chat-net
+    restart: "no"   # run once then exit
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Milestone 2 additions (copy-paste and uncomment):
+#
+#  app-node-2:
+#    build: {context: ., dockerfile: docker/Dockerfile.app}
+#    environment:
+#      NODE_ID: "node-2"
+#      PORT:    "50052"
+#      DB_PATH: "/data/chat.db"
+#      FILE_STORAGE_PATH: "/data/files/"
+#      LLM_SERVER: "llm-server:50060"
+#      PEERS: "app-node-1:50051,app-node-3:50053,app-node-4:50054,app-node-5:50055"
+#    volumes: [node2-data:/data]
+#    ports:   ["50052:50052"]
+#    depends_on: [llm-server]
+#    networks:   [chat-net]
+#
+#  (repeat for node-3, node-4, node-5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+volumes:
+  node1-data:
+  # node2-data:   # Milestone 2
+  # node3-data:
+  # node4-data:
+  # node5-data:
+
+networks:
+  chat-net:
+    driver: bridge

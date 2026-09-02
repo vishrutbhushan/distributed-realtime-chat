@@ -1,0 +1,36 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Base dependencies (gRPC only — no heavy ML libs yet)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ── Uncomment when a real LLM model is configured ──────────────────────────
+# COPY requirements-llm.txt .
+# RUN pip install --no-cache-dir -r requirements-llm.txt
+# ───────────────────────────────────────────────────────────────────────────
+
+# Source code
+COPY proto/ ./proto/
+COPY llm/   ./llm/
+
+# Compile LLM proto only
+RUN mkdir -p generated && \
+    python -m grpc_tools.protoc \
+        -I ./proto \
+        --python_out=./generated \
+        --grpc_python_out=./generated \
+        ./proto/llm.proto
+
+# ── Uncomment to pre-download a model at build time ────────────────────────
+# ARG MODEL_NAME=microsoft/phi-2
+# RUN python -c "from transformers import AutoModelForCausalLM, AutoTokenizer; \
+#     AutoTokenizer.from_pretrained('${MODEL_NAME}'); \
+#     AutoModelForCausalLM.from_pretrained('${MODEL_NAME}')"
+# ───────────────────────────────────────────────────────────────────────────
+
+ENV PYTHONPATH=/app:/app/generated
+
+CMD ["python", "llm/server.py"]
+

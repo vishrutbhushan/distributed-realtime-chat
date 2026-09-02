@@ -1,0 +1,364 @@
+syntax = "proto3";
+
+package chat;
+
+
+
+// ─────────────────────────────────────────────────────────────
+// Auth
+// ─────────────────────────────────────────────────────────────
+
+message LoginRequest {
+  string username         = 1;
+  string password         = 2;
+  string request_id       = 3;
+}
+
+message LoginResponse {
+  bool   success  = 1;
+  string token    = 2;
+  string user_id  = 3;
+  string role     = 4;
+  string message  = 5;
+}
+
+message LogoutRequest {
+  string token      = 1;
+  string request_id = 2;
+}
+
+message LogoutResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Channels
+// ─────────────────────────────────────────────────────────────
+
+message Channel {
+  string channel_id    = 1;
+  string name          = 2;
+  string created_by    = 3;
+  int64  created_at    = 4;
+  int32  member_count  = 5;
+}
+
+message CreateChannelRequest {
+  string token        = 1;
+  string channel_name = 2;
+  string request_id   = 3;
+}
+
+message CreateChannelResponse {
+  bool    success = 1;
+  Channel channel = 2;
+  string  message = 3;
+}
+
+message DeleteChannelRequest {
+  string token      = 1;
+  string channel_id = 2;
+  string request_id = 3;
+}
+
+message DeleteChannelResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+message JoinChannelRequest {
+  string token      = 1;
+  string channel_id = 2;
+  string request_id = 3;
+}
+
+message JoinChannelResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+message LeaveChannelRequest {
+  string token      = 1;
+  string channel_id = 2;
+  string request_id = 3;
+}
+
+message LeaveChannelResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+message ListChannelsRequest {
+  string token = 1;
+}
+
+message ListChannelsResponse {
+  repeated Channel channels = 1;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Messages
+// ─────────────────────────────────────────────────────────────
+
+message Message {
+  string message_id        = 1;
+  string channel_id        = 2;
+  string sender_id         = 3;
+  string sender_username   = 4;
+  string content           = 5;
+  int64  timestamp         = 6;   // ms epoch
+  string client_request_id = 7;
+  int64  raft_log_index    = 8;
+  string file_id           = 9;
+}
+
+message SendMessageRequest {
+  string token             = 1;
+  string channel_id        = 2;
+  string content           = 3;
+  string client_request_id = 4;
+  string file_id           = 5;
+}
+
+message SendMessageResponse {
+  bool    success = 1;
+  Message message = 2;
+  string  error   = 3;
+}
+
+message GetMessagesRequest {
+  string token            = 1;
+  string channel_id       = 2;
+  int32  limit            = 3;
+  int64  before_timestamp = 4;
+}
+
+message GetMessagesResponse {
+  repeated Message messages = 1;
+}
+
+message StreamMessagesRequest {
+  string token      = 1;
+  string channel_id = 2;
+}
+
+message MessageEvent {
+  string  event_type = 1;  // NEW_MESSAGE
+  Message message    = 2;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Presence
+// ─────────────────────────────────────────────────────────────
+
+message UserPresence {
+  string user_id   = 1;
+  string username  = 2;
+  string status    = 3;   // ONLINE | OFFLINE
+  int64  last_seen = 4;
+}
+
+message GetPresenceRequest {
+  string token      = 1;
+  string channel_id = 2;
+}
+
+message GetPresenceResponse {
+  repeated UserPresence users = 1;
+}
+
+message UpdatePresenceRequest {
+  string token  = 1;
+  string status = 2;
+}
+
+message UpdatePresenceResponse {
+  bool success = 1;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Files
+// ─────────────────────────────────────────────────────────────
+
+message FileMetadata {
+  string file_id          = 1;
+  string filename         = 2;
+  string owner_id         = 3;
+  string channel_id       = 4;
+  string storage_location = 5;
+  int64  size_bytes       = 6;
+  string content_type     = 7;
+  int64  uploaded_at      = 8;
+}
+
+message UploadFileRequest {
+  string token        = 1;
+  string channel_id   = 2;
+  string filename     = 3;
+  bytes  data         = 4;
+  string content_type = 5;
+  string request_id   = 6;
+}
+
+message UploadFileResponse {
+  bool         success = 1;
+  FileMetadata file    = 2;
+  string       message = 3;
+}
+
+message DownloadFileRequest {
+  string token   = 1;
+  string file_id = 2;
+}
+
+message DownloadFileResponse {
+  bool         success = 1;
+  bytes        data    = 2;
+  FileMetadata file    = 3;
+  string       message = 4;
+}
+
+message ListFilesRequest {
+  string token      = 1;
+  string channel_id = 2;
+}
+
+message ListFilesResponse {
+  repeated FileMetadata files = 1;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Admin
+// ─────────────────────────────────────────────────────────────
+
+message AddUserRequest {
+  string token      = 1;
+  string username   = 2;
+  string password   = 3;
+  string role       = 4;
+  string request_id = 5;
+}
+
+message AddUserResponse {
+  bool   success = 1;
+  string user_id = 2;
+  string message = 3;
+}
+
+message RemoveUserRequest {
+  string token      = 1;
+  string user_id    = 2;
+  string request_id = 3;
+}
+
+message RemoveUserResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Node status (Raft state exposed)
+// ─────────────────────────────────────────────────────────────
+
+message GetNodeStatusRequest {}
+
+message GetNodeStatusResponse {
+  string node_id      = 1;
+  string state        = 2;   // STANDALONE | LEADER | FOLLOWER | CANDIDATE
+  int64  term         = 3;
+  string leader_id    = 4;
+  int64  commit_index = 5;
+  int64  last_applied = 6;
+}
+
+// ─────────────────────────────────────────────────────────────
+// LLM proxy (client → app server → LLM server)
+// ─────────────────────────────────────────────────────────────
+
+message SmartReplyRequest {
+  string token                   = 1;
+  string request_id              = 2;
+  repeated string recent_messages = 3;
+  string current_message         = 4;
+  string channel_name            = 5;
+}
+
+message SmartReplyResponse {
+  string request_id              = 1;
+  repeated string suggestions    = 2;
+  bool   success                 = 3;
+  string error                   = 4;
+}
+
+message SummarizeRequest {
+  string token        = 1;
+  string request_id   = 2;
+  string channel_id   = 3;
+  string channel_name = 4;
+  int32  limit        = 5;   // how many recent messages to summarize
+}
+
+message SummarizeResponse {
+  string request_id = 1;
+  string summary    = 2;
+  bool   success    = 3;
+  string error      = 4;
+}
+
+message ContextSuggestionRequest {
+  string token        = 1;
+  string request_id   = 2;
+  string channel_id   = 3;
+  string channel_name = 4;
+}
+
+message ContextSuggestionResponse {
+  string request_id = 1;
+  string suggestion = 2;
+  bool   success    = 3;
+  string error      = 4;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Service
+// ─────────────────────────────────────────────────────────────
+
+service ChatService {
+  // Auth
+  rpc Login(LoginRequest)   returns (LoginResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // Channels
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
+  rpc DeleteChannel(DeleteChannelRequest) returns (DeleteChannelResponse);
+  rpc JoinChannel(JoinChannelRequest)     returns (JoinChannelResponse);
+  rpc LeaveChannel(LeaveChannelRequest)   returns (LeaveChannelResponse);
+  rpc ListChannels(ListChannelsRequest)   returns (ListChannelsResponse);
+
+  // Messages
+  rpc SendMessage(SendMessageRequest)               returns (SendMessageResponse);
+  rpc GetMessages(GetMessagesRequest)               returns (GetMessagesResponse);
+  rpc StreamMessages(StreamMessagesRequest)         returns (stream MessageEvent);
+
+  // Presence
+  rpc GetPresence(GetPresenceRequest)       returns (GetPresenceResponse);
+  rpc UpdatePresence(UpdatePresenceRequest) returns (UpdatePresenceResponse);
+
+  // Files
+  rpc UploadFile(UploadFileRequest)     returns (UploadFileResponse);
+  rpc DownloadFile(DownloadFileRequest) returns (DownloadFileResponse);
+  rpc ListFiles(ListFilesRequest)       returns (ListFilesResponse);
+
+  // Admin
+  rpc AddUser(AddUserRequest)       returns (AddUserResponse);
+  rpc RemoveUser(RemoveUserRequest) returns (RemoveUserResponse);
+
+  // Node status
+  rpc GetNodeStatus(GetNodeStatusRequest) returns (GetNodeStatusResponse);
+
+  // LLM proxy
+  rpc GetSmartReplies(SmartReplyRequest)           returns (SmartReplyResponse);
+  rpc SummarizeChannel(SummarizeRequest)           returns (SummarizeResponse);
+  rpc GetContextSuggestion(ContextSuggestionRequest) returns (ContextSuggestionResponse);
+}

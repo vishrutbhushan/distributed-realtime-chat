@@ -1,0 +1,26 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Optional LLM dependencies for llm/server.py
+#
+# Uncomment ONE backend in llm/inference.py, then uncomment the matching
+# section below and rebuild: docker compose build llm-server
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Backend A: llama.cpp (CPU-optimised, GGUF format, recommended) ───────────
+# Set MODEL_PATH env var to the GGUF file inside the container.
+#
+# llama-cpp-python>=0.2.56
+
+# ── Backend B: Hugging Face Transformers (CPU float32) ────────────────────────
+# Set MODEL_NAME env var to the HuggingFace model ID, e.g. "microsoft/phi-2"
+# or "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+#
+# transformers>=4.40.0
+# torch>=2.2.0           # CPU-only wheels are much smaller
+# accelerate>=0.29.0
+# sentencepiece>=0.1.99
+
+# ── Backend C: Ollama REST API (requires separate Ollama service) ─────────────
+# Add an "ollama" service to docker-compose.yml and set OLLAMA_URL / OLLAMA_MODEL.
+#
+# requests>=2.31.0
+
