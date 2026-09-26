@@ -19,10 +19,11 @@ A distributed real-time chat and collaboration platform designed to demonstrate:
 ### Run the One-Click Automated Demo & Verification
 The startup script performs a clean-slate teardown (`docker compose down -v`), rebuilds images executing static unit tests at build time, starts services, and runs the 14-point verification suite:
 
-**Windows (PowerShell)**:
-```powershell
-.\scripts\start-demo.ps1
+**Windows (Command Prompt / PowerShell / File Explorer)**:
+```cmd
+.\start-demo.bat
 ```
+*(or via PowerShell directly: `powershell -ExecutionPolicy Bypass -File .\scripts\start-demo.ps1`)*
 
 **Linux / macOS (Bash)**:
 ```bash
