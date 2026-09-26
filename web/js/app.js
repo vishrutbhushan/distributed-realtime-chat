@@ -35,6 +35,7 @@ async function submitAuth() {
     const data = authMode === "login" ? await api.login(u, p) : await api.signup(u, p);
     if (data.success) {
       currentUser = { token: data.token, user_id: data.user_id, username: data.username };
+      sessionStorage.setItem("chat_session", JSON.stringify(currentUser));
       document.getElementById("auth-container").style.display = "none";
       document.getElementById("current-username").innerText = data.username;
       startPolling();
@@ -52,15 +53,23 @@ async function logout() {
       await api.logout(currentUser.token);
     } catch (e) {}
   }
+  sessionStorage.removeItem("chat_session");
+  sessionStorage.removeItem("chat_current_chat");
   currentUser = null;
   currentChat = null;
   if (pollInterval) clearInterval(pollInterval);
   document.getElementById("auth-container").style.display = "flex";
   document.getElementById("auth-password").value = "";
+  document.getElementById("chat-title").innerText = "Select a conversation";
+  document.getElementById("chat-subtitle").innerText = "Choose a user or group to start collaborating";
+  document.getElementById("chat-actions").style.display = "none";
+  document.getElementById("input-area").style.display = "none";
+  document.getElementById("messages-container").innerHTML = `<div class="empty-chat">Select a user or group from the sidebar to start chatting.</div>`;
 }
 
 function startPolling() {
   loadDirectory();
+  if (pollInterval) clearInterval(pollInterval);
   pollInterval = setInterval(() => {
     loadDirectory(true);
     if (currentChat) loadMessages(true);
@@ -75,12 +84,37 @@ async function loadDirectory(background = false) {
       api.getGroups(currentUser.token),
     ]);
 
+    // If unauthorized or token expired, reset session cleanly
+    if ((!uResp.success && (uResp.error?.includes("token") || uResp.error?.includes("UNAUTHENTICATED"))) ||
+        (!gResp.success && (gResp.error?.includes("token") || gResp.error?.includes("UNAUTHENTICATED")))) {
+      logout();
+      return;
+    }
+
     if (uResp.success) {
       cachedUsers = uResp.users;
+      if (currentChat && currentChat.type === "DM") {
+        const u = cachedUsers.find(x => x.user_id === currentChat.id);
+        if (u && u.status !== currentChat.status) {
+          currentChat.status = u.status;
+          sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+          updateChatHeader();
+        }
+      }
       renderUsersList(cachedUsers);
     }
     if (gResp.success) {
       cachedGroups = gResp.groups;
+      if (currentChat && currentChat.type === "GROUP") {
+        const g = cachedGroups.find(x => x.group_id === currentChat.id);
+        if (g && (g.name !== currentChat.name || g.member_count !== currentChat.member_count || g.user_role !== currentChat.role)) {
+          currentChat.name = g.name;
+          currentChat.member_count = g.member_count;
+          currentChat.role = g.user_role;
+          sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+          updateChatHeader();
+        }
+      }
       renderGroupsList(cachedGroups);
     }
   } catch (e) {
@@ -130,12 +164,14 @@ function renderGroupsList(groups) {
 
 function selectDM(u) {
   currentChat = { type: "DM", id: u.user_id, name: u.username, status: u.status };
+  sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
   updateChatHeader();
   loadMessages();
 }
 
 function selectGroup(g) {
   currentChat = { type: "GROUP", id: g.group_id, name: g.name, role: g.user_role, member_count: g.member_count };
+  sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
   updateChatHeader();
   loadMessages();
 }
@@ -468,3 +504,53 @@ function escapeHtml(str) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[s]));
 }
+
+function initSession() {
+  const uInput = document.getElementById("auth-username");
+  const pInput = document.getElementById("auth-password");
+  if (uInput && !uInput._hasEnter) {
+    uInput.addEventListener("keydown", e => { if (e.key === "Enter") submitAuth(); });
+    uInput._hasEnter = true;
+  }
+  if (pInput && !pInput._hasEnter) {
+    pInput.addEventListener("keydown", e => { if (e.key === "Enter") submitAuth(); });
+    pInput._hasEnter = true;
+  }
+
+  const saved = sessionStorage.getItem("chat_session");
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (parsed && parsed.token && parsed.user_id && parsed.username) {
+        currentUser = parsed;
+        document.getElementById("auth-container").style.display = "none";
+        document.getElementById("current-username").innerText = parsed.username;
+
+        const savedChat = sessionStorage.getItem("chat_current_chat");
+        if (savedChat) {
+          try {
+            currentChat = JSON.parse(savedChat);
+            updateChatHeader();
+            loadMessages();
+          } catch (e) {
+            currentChat = null;
+          }
+        }
+
+        startPolling();
+        return;
+      }
+    } catch (e) {
+      sessionStorage.removeItem("chat_session");
+    }
+  }
+
+  document.getElementById("auth-container").style.display = "flex";
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initSession);
+} else {
+  initSession();
+}
+
