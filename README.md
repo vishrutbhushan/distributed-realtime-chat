@@ -8,26 +8,23 @@ A distributed real-time chat and collaboration platform designed to demonstrate:
 - **Local CPU-optimized LLM assistance (Smart Replies & Summarization over full history)**
 - **Modern Responsive Web UI & Build-Time Self-Tests**
 - **Docker-only containerized architecture with build-time static verification**
-- **Architectural readiness for Raft consensus (Milestone 2)**
 
 ---
 
-## 1. Quick Start (Docker Only)
+## 1. Quick Start
 
-> **Important**: Docker is the sole supported and verified runtime environment.
-
-### Run the One-Click Startup Script (Live Web UI)
-The startup script performs a clean-slate teardown (`docker compose down -v`), rebuilds images executing static self-tests at build time, starts the application and local LLM services, and keeps the cluster live for interactive browser usage:
+### Run the Application Script (Live Web UI)
+The startup script automatically handles Python virtual environment creation/selection, dependencies, performs a clean-slate teardown (`docker compose down -v`), rebuilds images executing static self-tests at build time, starts the application and local LLM services, and keeps the cluster live for interactive browser usage:
 
 **Windows (Command Prompt / PowerShell / File Explorer)**:
 ```cmd
-.\start-demo.bat
+.\start.bat
 ```
-*(or via PowerShell directly: `powershell -ExecutionPolicy Bypass -File .\scripts\start-demo.ps1`)*
+*(or via PowerShell directly: `powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1`)*
 
 **Linux / macOS (Bash)**:
 ```bash
-bash scripts/start-demo.sh
+bash scripts/start.sh
 ```
 
 Once running:
@@ -36,7 +33,7 @@ Once running:
 - Press **`Ctrl+C`** to gracefully shut down the cluster and clean up volumes.
 ---
 
-## 2. Milestone 1 Key Requirements & Implementation
+## 2. Key Requirements & Implementation
 
 | # | Requirement | Implementation Details |
 |---|-------------|------------------------|
@@ -52,8 +49,8 @@ Once running:
 | **10** | **LLM Features** | a) Smart Replies (generates 3 concise suggestions). b) Summarize (generates bullet-point digest). |
 | **11** | **Pass Full Chat History** | App node passes the entire conversation history to the LLM server for context-aware generation. |
 | **12** | **UI Options** | Web UI provides dedicated buttons for "Smart Replies" (clickable pills) and "Summarize" (modal summary). |
-| **13** | **Proper Database Schema** | Clean SQLite tables: `users`, `sessions`, `groups`, `group_members`, `messages`, `files`, `raft_state`, `raft_log`. |
-| **14** | **gRPC Inter-service & M2 Readiness** | gRPC exclusively used for all client-to-app and app-to-LLM communication. Monolithic node design structured for Raft log replication in M2. |
+| **13** | **Proper Database Schema** | Clean SQLite tables: `users`, `sessions`, `groups`, `group_members`, `messages`, `files`. |
+| **14** | **gRPC Inter-service Architecture** | gRPC exclusively used for all client-to-app and app-to-LLM communication. |
 
 ---
 
@@ -63,7 +60,6 @@ Once running:
 distributed-realtime-chat/
 ├── proto/                  # Protocol buffer definitions
 │   ├── chat.proto          # Client ↔ App Node RPCs
-│   ├── raft.proto          # Inter-node Raft consensus RPCs (Milestone 2)
 │   └── llm.proto           # App Node ↔ LLM Server RPCs
 │
 ├── app/                    # Monolithic Application Node
@@ -91,14 +87,8 @@ distributed-realtime-chat/
 ├── storage/                # Persistence Layer
 │   └── database.py         # Thread-safe SQLite with WAL & concurrency lock
 │
-├── raft/                   # Consensus Engine (Milestone 2 stubs)
-│   ├── node.py             # RaftNode (STANDALONE in M1, consensus in M2)
-│   ├── log.py              # Persistent RaftLog backed by SQLite
-│   └── state_machine.py    # StateMachine for committed log entries
-│
-├── client/                 # Python Client
+├── client/                 # Python CLI Client
 │   ├── client.py           # CLI entrypoint & argument parser
-│   ├── demo.py             # 14-point automated verification suite
 │   └── repl.py             # Interactive terminal chat REPL
 │
 ├── tests/                  # Static Unit Tests (run at docker build time)
@@ -110,10 +100,10 @@ distributed-realtime-chat/
 │   └── Dockerfile.llm      # LLM Server image (build-time static tests + proto compilation)
 │
 ├── docker-compose.yml      # Cluster deployment (App Node :50051/:8000, LLM Server :50060)
-└── docs/
-    ├── ARCHITECTURE.md     # In-depth architectural blueprint
-    ├── WALKTHROUGH.md      # Detailed verification run walkthrough
-    └── MILESTONE2.md       # Roadmap and pending changes for Milestone 2
+├── start.bat               # Windows one-click startup (venv, deps, docker)
+└── scripts/
+    ├── start.ps1           # PowerShell orchestrator
+    └── start.sh            # Linux/macOS orchestrator
 ```
 
 ---

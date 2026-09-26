@@ -5,6 +5,21 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd "$script_dir/.." && pwd)"
 cd "$project_root"
 
+# 1. Virtual environment setup and dependency verification
+if command -v python3 >/dev/null 2>&1; then
+  if [ ! -d ".venv" ]; then
+    printf 'Creating virtual environment in .venv...\n'
+    python3 -m venv .venv 2>/dev/null || true
+  fi
+  if [ -f ".venv/bin/python" ]; then
+    printf 'Verifying dependencies in virtual environment...\n'
+    .venv/bin/python -m pip install -q --disable-pip-version-check -r requirements.txt || true
+    mkdir -p generated
+    .venv/bin/python -m grpc_tools.protoc -I ./proto --python_out=./generated --grpc_python_out=./generated ./proto/chat.proto ./proto/llm.proto || true
+  fi
+fi
+
+# 2. Docker verification
 if ! command -v docker >/dev/null 2>&1; then
   printf 'Docker CLI was not found. Install Docker Desktop or Docker Engine, then retry.\n' >&2
   exit 1

@@ -10,7 +10,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY proto/     ./proto/
 COPY app/       ./app/
 COPY storage/   ./storage/
-COPY raft/      ./raft/
 COPY client/    ./client/
 COPY web/       ./web/
 COPY llm/       ./llm/
@@ -23,7 +22,6 @@ RUN mkdir -p generated && \
         --python_out=./generated \
         --grpc_python_out=./generated \
         ./proto/chat.proto \
-        ./proto/raft.proto \
         ./proto/llm.proto
 
 ENV PYTHONPATH=/app:/app/generated

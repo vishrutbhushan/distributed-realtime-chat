@@ -1,6 +1,5 @@
 """
 Thread-safe SQLite database layer for Distributed Real-time Chat.
-Each Raft node owns its own local SQLite file.
 Thread-local connections + process-wide lock prevent SQLite concurrency locks.
 """
 
@@ -120,7 +119,6 @@ class Database:
                     file_id           TEXT DEFAULT NULL,
                     timestamp         INTEGER NOT NULL,
                     client_request_id TEXT UNIQUE,
-                    raft_log_index    INTEGER DEFAULT 0,
                     FOREIGN KEY (sender_id)    REFERENCES users(user_id),
                     FOREIGN KEY (recipient_id) REFERENCES users(user_id),
                     FOREIGN KEY (group_id)     REFERENCES groups(group_id) ON DELETE CASCADE
@@ -144,21 +142,6 @@ class Database:
                     storage_location TEXT NOT NULL,
                     uploaded_at      INTEGER NOT NULL,
                     FOREIGN KEY (owner_id) REFERENCES users(user_id)
-                );
-
-                -- Raft persistent state (Milestone 2)
-                CREATE TABLE IF NOT EXISTS raft_state (
-                    key   TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-
-                -- Raft log entries (Milestone 2)
-                CREATE TABLE IF NOT EXISTS raft_log (
-                    log_index    INTEGER PRIMARY KEY,
-                    term         INTEGER NOT NULL,
-                    command_type TEXT NOT NULL,
-                    payload      TEXT NOT NULL,
-                    request_id   TEXT
                 );
             """)
             conn.commit()

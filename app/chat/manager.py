@@ -91,18 +91,17 @@ class ChatManager:
 
             message_id = str(uuid.uuid4())
             ts = int(time.time() * 1000)
-            raft_log_index = 0
 
             try:
                 self.db.execute(
                     """
                     INSERT INTO messages
                         (message_id, chat_type, sender_id, recipient_id, group_id, content,
-                         file_id, timestamp, client_request_id, raft_log_index)
-                    VALUES (?, 'DM', ?, ?, NULL, ?, ?, ?, ?, ?)
+                         file_id, timestamp, client_request_id)
+                    VALUES (?, 'DM', ?, ?, NULL, ?, ?, ?, ?)
                     """,
                     (message_id, sender_id, recipient_id, content,
-                     file_id, ts, client_request_id, raft_log_index),
+                     file_id, ts, client_request_id),
                 )
                 self.db.commit()
             except Exception as exc:
@@ -426,18 +425,17 @@ class ChatManager:
 
             message_id = str(uuid.uuid4())
             ts = int(time.time() * 1000)
-            raft_log_index = 0
 
             try:
                 self.db.execute(
                     """
                     INSERT INTO messages
                         (message_id, chat_type, sender_id, recipient_id, group_id, content,
-                         file_id, timestamp, client_request_id, raft_log_index)
-                    VALUES (?, 'GROUP', ?, NULL, ?, ?, ?, ?, ?, ?)
+                         file_id, timestamp, client_request_id)
+                    VALUES (?, 'GROUP', ?, NULL, ?, ?, ?, ?, ?)
                     """,
                     (message_id, sender_id, group_id, content,
-                     file_id, ts, client_request_id, raft_log_index),
+                     file_id, ts, client_request_id),
                 )
                 self.db.commit()
             except Exception as exc:

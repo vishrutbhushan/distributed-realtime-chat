@@ -8,12 +8,30 @@ $HasLocation = $false
 $ExitCode = 0
 
 try {
+    Push-Location -LiteralPath $ProjectRoot
+    $HasLocation = $true
+
+    # 1. Virtual environment setup and dependency verification
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $VenvPath = Join-Path $ProjectRoot '.venv'
+        $VenvPy = Join-Path $VenvPath 'Scripts\python.exe'
+        if (-not (Test-Path $VenvPath)) {
+            Write-Host 'Creating virtual environment in .venv...' -ForegroundColor Cyan
+            & python -m venv $VenvPath 2>$null
+        }
+        if (Test-Path $VenvPy) {
+            Write-Host 'Verifying dependencies in virtual environment...' -ForegroundColor Cyan
+            & $VenvPy -m pip install -q --disable-pip-version-check -r (Join-Path $ProjectRoot 'requirements.txt')
+            $GenDir = Join-Path $ProjectRoot 'generated'
+            if (-not (Test-Path $GenDir)) { New-Item -ItemType Directory -Path $GenDir | Out-Null }
+            & $VenvPy -m grpc_tools.protoc -I ./proto --python_out=./generated --grpc_python_out=./generated ./proto/chat.proto ./proto/llm.proto
+        }
+    }
+
+    # 2. Docker verification
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
         throw 'Docker CLI was not found. Install Docker Desktop or Docker Engine, then retry.'
     }
-
-    Push-Location -LiteralPath $ProjectRoot
-    $HasLocation = $true
 
     $null = & docker compose version
     if ($LASTEXITCODE -ne 0) {

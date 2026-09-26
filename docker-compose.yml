@@ -48,7 +48,6 @@ services:
       DB_PATH:           "/data/chat.db"
       FILE_STORAGE_PATH: "/data/files/"
       LLM_SERVER:        "llm-server:50060"
-      # PEERS: ""   # Comma-separated peer addresses for Milestone 2
     volumes:
       - node1-data:/data
     networks:
@@ -62,23 +61,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Milestone 2 additions (copy-paste and uncomment for 5-node Raft cluster):
-#
-#  app-node-2:
-#    build: {context: ., dockerfile: docker/Dockerfile.app}
-#    environment:
-#      NODE_ID: "node-2"
-#      PORT:    "50052"
-#      WEB_PORT: "8002"
-#      DB_PATH: "/data/chat.db"
-#      FILE_STORAGE_PATH: "/data/files/"
-#      LLM_SERVER: "llm-server:50060"
-#      PEERS: "app-node-1:50051,app-node-3:50053,app-node-4:50054,app-node-5:50055"
-#    volumes: [node2-data:/data]
-#    ports:   ["50052:50052", "8002:8002"]
-# ─────────────────────────────────────────────────────────────────────────────
 
 volumes:
   node1-data:

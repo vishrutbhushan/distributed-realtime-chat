@@ -27,7 +27,6 @@ from app.auth.manager import AuthManager
 from app.chat.manager import ChatManager
 from app.files.manager import FileManager
 from app.presence.manager import PresenceManager
-from raft.node import RaftNode
 from storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -52,9 +51,9 @@ def create_llm_stub(llm_server_addr: str):
 
 class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
-    def __init__(self, db: Database, raft: RaftNode, file_storage_path: str, llm_server_addr: str):
+    def __init__(self, db: Database, node_id: str, file_storage_path: str, llm_server_addr: str):
         self.db = db
-        self.raft = raft
+        self.node_id = node_id
         self.auth = AuthManager(db)
         self.chat = ChatManager(db)
         self.presence = PresenceManager(db)
@@ -458,14 +457,13 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ── Node Status ───────────────────────────────────────────────────────────
 
     def GetNodeStatus(self, request, context):
-        s = self.raft.status()
         return chat_pb2.GetNodeStatusResponse(
-            node_id=s["node_id"],
-            state=s["state"],
-            term=s["term"],
-            leader_id=s["leader_id"],
-            commit_index=s["commit_index"],
-            last_applied=s["last_applied"],
+            node_id=self.node_id,
+            state="STANDALONE",
+            term=0,
+            leader_id=self.node_id,
+            commit_index=0,
+            last_applied=0,
         )
 
     # ── Helpers ───────────────────────────────────────────────────────────────

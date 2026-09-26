@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
-CLI entrypoint for Distributed Real-time Chat.
+CLI entrypoint for Distributed Real-time Chat interactive terminal REPL.
 
 Usage:
   python client/client.py --server localhost:50051
-  python client/client.py --server localhost:50051 --demo
 """
 
 import argparse
@@ -20,7 +19,6 @@ sys.path.insert(0, _ROOT)
 import grpc
 import chat_pb2
 import chat_pb2_grpc
-from client.demo import run_demo
 from client.repl import run_interactive
 
 SERVER = os.environ.get("APP_SERVER", "localhost:50051")
@@ -38,9 +36,8 @@ def make_stub(server: str) -> chat_pb2_grpc.ChatServiceStub:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Distributed Chat CLI client")
+    parser = argparse.ArgumentParser(description="Distributed Chat CLI Client")
     parser.add_argument("--server", default=SERVER, help="App server address (host:port)")
-    parser.add_argument("--demo", action="store_true", help="Run automated demo then exit")
     args = parser.parse_args()
 
     print(f"Connecting to {args.server} ...")
@@ -49,7 +46,7 @@ def main():
     for attempt in range(30):
         try:
             stub.GetNodeStatus(chat_pb2.GetNodeStatusRequest())
-            print("Connected!")
+            print("Connected to Distributed Chat Server!")
             break
         except grpc.RpcError:
             print(f"  Waiting for server... ({attempt+1}/30)")
@@ -58,10 +55,7 @@ def main():
         print("Could not connect to server. Exiting.")
         sys.exit(1)
 
-    if args.demo:
-        run_demo(stub)
-    else:
-        run_interactive(stub)
+    run_interactive(stub)
 
 
 if __name__ == "__main__":
