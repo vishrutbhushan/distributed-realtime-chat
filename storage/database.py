@@ -23,57 +23,45 @@ class Database:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._local  = threading.local()
         self._lock   = threading.RLock()
-        self._all_conns = []
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+        self._conn   = self._connect()
         self._init_schema()
         logger.info("[DB] Initialised at %s", db_path)
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, timeout=60.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA busy_timeout=60000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL")
-        with self._lock:
-            self._all_conns.append(conn)
         return conn
-
-    def _get_conn(self) -> sqlite3.Connection:
-        """Return (or lazily create) the thread-local connection."""
-        if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = self._connect()
-        return self._local.conn
 
     @property
     def conn(self) -> sqlite3.Connection:
-        return self._get_conn()
+        return self._conn
 
     @property
     def lock(self) -> threading.RLock:
         return self._lock
 
     def close(self):
-        """Close all connections across threads."""
+        """Close connection."""
         with self._lock:
-            for conn in self._all_conns:
+            if self._conn:
                 try:
-                    conn.close()
+                    self._conn.close()
                 except Exception:
                     pass
-            self._all_conns.clear()
-            if hasattr(self._local, "conn"):
-                self._local.conn = None
+                self._conn = None
 
     def _init_schema(self):
         """Create all tables on startup (idempotent). NO default users or channels."""
         with self._lock:
-            conn = self._connect()
-            conn.executescript("""
+            self._conn.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id       TEXT PRIMARY KEY,
                     username      TEXT UNIQUE NOT NULL,
@@ -144,8 +132,7 @@ class Database:
                     FOREIGN KEY (owner_id) REFERENCES users(user_id)
                 );
             """)
-            conn.commit()
-            conn.close()
+            self._conn.commit()
 
     # ── Public helpers ────────────────────────────────────────────────────────
 

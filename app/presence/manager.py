@@ -11,8 +11,8 @@ import time
 
 logger = logging.getLogger(__name__)
 
-OFFLINE_THRESHOLD = 300  # 5 minutes without activity -> inactive
-SWEEP_INTERVAL    = 30   # sweep every 30 seconds
+OFFLINE_THRESHOLD = 20  # 20 seconds without activity -> inactive
+SWEEP_INTERVAL    = 5   # sweep every 5 seconds
 
 
 class PresenceManager:

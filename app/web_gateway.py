@@ -168,7 +168,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             try:
                 resp = self.grpc_stub.DownloadFile(chat_pb2.DownloadFileRequest(token=token, file_id=file_id))
                 if not resp.success:
-                    self.send_error(404, resp.error or "File not found")
+                    self.send_error(404, resp.message or "File not found")
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", resp.file.content_type)
@@ -382,7 +382,8 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                         "file_type": resp.file.file_type,
                         "size_bytes": resp.file.size_bytes,
                     } if resp.success else None,
-                    "error": resp.error,
+                    "message": resp.message,
+                    "error": "" if resp.success else resp.message,
                 })
             except grpc.RpcError as e:
                 self._send_json(400, {"success": False, "error": e.details()})

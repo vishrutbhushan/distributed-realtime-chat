@@ -468,3 +468,10 @@ function escapeHtml(str) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[s]));
 }
+
+window.addEventListener("pagehide", () => {
+  if (currentUser && currentUser.token) {
+    const blob = new Blob([JSON.stringify({ token: currentUser.token })], { type: "application/json" });
+    navigator.sendBeacon("/api/logout", blob);
+  }
+});
