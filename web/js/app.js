@@ -11,6 +11,7 @@ let cachedGroups = [];
 let currentMessages = [];
 let pendingFile = null;
 let pollInterval = null;
+let lastSmartReplyMsgId = null;
 
 function switchTab(mode) {
   authMode = mode;
@@ -163,6 +164,9 @@ function renderGroupsList(groups) {
 }
 
 function selectDM(u) {
+  lastSmartReplyMsgId = null;
+  const bar = document.getElementById("smart-replies-bar");
+  if (bar) bar.style.display = "none";
   currentChat = { type: "DM", id: u.user_id, name: u.username, status: u.status };
   sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
   updateChatHeader();
@@ -170,6 +174,9 @@ function selectDM(u) {
 }
 
 function selectGroup(g) {
+  lastSmartReplyMsgId = null;
+  const bar = document.getElementById("smart-replies-bar");
+  if (bar) bar.style.display = "none";
   currentChat = { type: "GROUP", id: g.group_id, name: g.name, role: g.user_role, member_count: g.member_count };
   sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
   updateChatHeader();
@@ -186,18 +193,22 @@ function updateChatHeader() {
   const sub = document.getElementById("chat-subtitle");
   const dot = document.getElementById("header-status-dot");
   const manageBtn = document.getElementById("btn-manage-group");
+  const addMemberBtn = document.getElementById("btn-add-member");
 
   if (currentChat.type === "DM") {
     title.innerText = currentChat.name;
     sub.innerText = `Direct Message (${currentChat.status})`;
     dot.style.display = "block";
     dot.className = "status-dot " + (currentChat.status === "active" ? "active" : "");
-    manageBtn.style.display = "none";
+    if (manageBtn) manageBtn.style.display = "none";
+    if (addMemberBtn) addMemberBtn.style.display = "none";
   } else {
     title.innerText = "# " + currentChat.name;
     sub.innerText = `Group · ${currentChat.member_count || 1} members · You are ${currentChat.role}`;
     dot.style.display = "none";
-    manageBtn.style.display = currentChat.role === "ADMIN" ? "block" : "none";
+    const isAdmin = currentChat.role === "ADMIN";
+    if (manageBtn) manageBtn.style.display = isAdmin ? "block" : "none";
+    if (addMemberBtn) addMemberBtn.style.display = isAdmin ? "block" : "none";
   }
   renderUsersList(cachedUsers);
   renderGroupsList(cachedGroups);
@@ -215,6 +226,25 @@ async function loadMessages(background = false) {
       currentMessages = data.messages || [];
       if (!background || currentMessages.length !== oldLen) {
         renderMessages(currentMessages);
+      }
+
+      // Automatically display smart replies always when the last message is not from currentUser
+      if (currentMessages.length > 0) {
+        const lastMsg = currentMessages[currentMessages.length - 1];
+        if (lastMsg.sender_id !== currentUser.user_id) {
+          if (lastMsg.message_id !== lastSmartReplyMsgId) {
+            lastSmartReplyMsgId = lastMsg.message_id;
+            requestSmartReplies();
+          }
+        } else {
+          lastSmartReplyMsgId = null;
+          const bar = document.getElementById("smart-replies-bar");
+          if (bar) bar.style.display = "none";
+        }
+      } else {
+        lastSmartReplyMsgId = null;
+        const bar = document.getElementById("smart-replies-bar");
+        if (bar) bar.style.display = "none";
       }
     }
   } catch (e) {
@@ -314,6 +344,9 @@ async function sendMessage() {
     if (data.success) {
       textInput.value = "";
       clearFileAttachment();
+      lastSmartReplyMsgId = null;
+      const bar = document.getElementById("smart-replies-bar");
+      if (bar) bar.style.display = "none";
       loadMessages();
     } else {
       alert(data.error || "Failed to send message");
@@ -425,7 +458,15 @@ async function openManageGroupModal() {
   document.getElementById("rename-group-name").value = currentChat.name;
 
   try {
-    const data = await api.getGroupMembers(currentUser.token, currentChat.id);
+    const [data, usersData] = await Promise.all([
+      api.getGroupMembers(currentUser.token, currentChat.id),
+      api.getUsers(currentUser.token),
+    ]);
+
+    if (usersData && usersData.success) {
+      cachedUsers = usersData.users || [];
+    }
+
     if (data.success) {
       const list = document.getElementById("manage-members-list");
       list.innerHTML = "";
@@ -446,12 +487,17 @@ async function openManageGroupModal() {
         list.appendChild(div);
       });
 
-      // Fill add member select
+      // Fill add member select with all registered users who aren't yet in this group
       const sel = document.getElementById("add-member-select");
-      sel.innerHTML = `<option value="">Select user to add...</option>`;
-      cachedUsers.filter(u => !memberIds.has(u.user_id)).forEach(u => {
-        sel.innerHTML += `<option value="${u.user_id}">${escapeHtml(u.username)}</option>`;
-      });
+      const availableUsers = cachedUsers.filter(u => !memberIds.has(u.user_id));
+      if (availableUsers.length === 0) {
+        sel.innerHTML = `<option value="">All registered users are already members</option>`;
+      } else {
+        sel.innerHTML = `<option value="">Select user to add...</option>`;
+        availableUsers.forEach(u => {
+          sel.innerHTML += `<option value="${u.user_id}">${escapeHtml(u.username)} (${u.status})</option>`;
+        });
+      }
     }
   } catch (e) {
     alert("Error loading group members: " + e.message);
@@ -482,8 +528,13 @@ function submitRenameGroup() {
 }
 
 function submitAddMember() {
-  const uid = document.getElementById("add-member-select").value;
-  if (uid) groupAction("ADD_MEMBER", uid);
+  const sel = document.getElementById("add-member-select");
+  const uid = sel.value;
+  if (!uid) {
+    alert("Please select a user to add to the group.");
+    return;
+  }
+  groupAction("ADD_MEMBER", uid);
 }
 
 // Modal helpers

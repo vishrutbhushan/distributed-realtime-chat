@@ -271,12 +271,14 @@ class ChatManager:
         if not grp:
             return False, {}, "Group not found"
 
-        # Verify requesting user is ADMIN
+        # Verify requesting user is ADMIN or the group creator
         admin_check = self.db.fetchone(
             "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
             (group_id, requesting_user_id),
         )
-        if not admin_check or admin_check["role"] != "ADMIN":
+        is_creator = (grp["created_by"] == requesting_user_id)
+        is_admin = is_creator or (admin_check and admin_check["role"] == "ADMIN")
+        if not is_admin:
             return False, {}, "Permission denied: Only group admins can perform this action"
 
         now = int(time.time())
@@ -293,12 +295,20 @@ class ChatManager:
             elif action == "ADD_MEMBER":
                 if not target_user_id:
                     return False, {}, "Target user ID required"
+                u_row = self.db.fetchone(
+                    "SELECT user_id FROM users WHERE user_id = ? OR username = ?",
+                    (target_user_id, target_user_id),
+                )
+                if not u_row:
+                    return False, {}, f"User '{target_user_id}' not found"
+                target_uid = u_row["user_id"]
+
                 self.db.execute(
                     "INSERT OR IGNORE INTO group_members (group_id, user_id, role, joined_at) VALUES (?, ?, 'MEMBER', ?)",
-                    (group_id, target_user_id, now),
+                    (group_id, target_uid, now),
                 )
                 self.db.commit()
-                logger.info("[CHAT] User %s added to group %s", target_user_id, group_id)
+                logger.info("[CHAT] User %s added to group %s", target_uid, group_id)
 
             elif action == "REMOVE_MEMBER":
                 if not target_user_id:
@@ -351,7 +361,7 @@ class ChatManager:
             """
             SELECT g.group_id, g.name, g.created_by, g.created_at,
                    u.username AS created_by_name,
-                   gm.role AS user_role,
+                   CASE WHEN g.created_by = ? OR gm.role = 'ADMIN' THEN 'ADMIN' ELSE gm.role END AS user_role,
                    (SELECT COUNT(*) FROM group_members WHERE group_id = g.group_id) AS member_count
             FROM groups g
             JOIN group_members gm ON g.group_id = gm.group_id
@@ -359,7 +369,7 @@ class ChatManager:
             WHERE gm.user_id = ?
             ORDER BY g.created_at DESC
             """,
-            (user_id,),
+            (user_id, user_id),
         )
         return [dict(r) for r in rows]
 

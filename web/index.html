@@ -72,8 +72,9 @@
           </div>
         </div>
         <div class="header-actions" id="chat-actions" style="display: none;">
-          <button class="btn-action ai" onclick="requestSmartReplies()">💡 Smart Replies</button>
+          <button class="btn-action ai" id="btn-smart-reply" onclick="requestSmartReplies()">💡 Smart Replies</button>
           <button class="btn-action ai" onclick="requestSummarize()">📝 Summarize</button>
+          <button class="btn-action" id="btn-add-member" style="display: none;" onclick="openManageGroupModal()">+ Add Member</button>
           <button class="btn-action" id="btn-manage-group" style="display: none;" onclick="openManageGroupModal()">⚙️ Manage</button>
         </div>
       </div>

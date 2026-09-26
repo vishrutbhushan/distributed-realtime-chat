@@ -6,6 +6,8 @@ and serves static web assets (HTML, CSS, JS).
 """
 
 import base64
+import email
+import email.policy
 import json
 import logging
 import os
@@ -344,24 +346,37 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             file_bytes = b""
             f_content_type = "application/octet-stream"
 
+            # Check query params for token fallback
+            parsed_qs = urllib.parse.parse_qs(parsed.query)
+            token = parsed_qs.get("token", [""])[0]
+
             if "multipart/form-data" in content_type_header:
-                boundary = content_type_header.split("boundary=")[1].encode("utf-8")
-                parts = raw_body.split(b"--" + boundary)
-                for part in parts:
-                    if b'name="token"' in part:
-                        token = part.split(b"\r\n\r\n")[1].rstrip(b"\r\n").decode("utf-8")
-                    elif b'name="chat_type"' in part:
-                        chat_type = part.split(b"\r\n\r\n")[1].rstrip(b"\r\n").decode("utf-8")
-                    elif b'name="target_id"' in part:
-                        target_id = part.split(b"\r\n\r\n")[1].rstrip(b"\r\n").decode("utf-8")
-                    elif b'name="file"' in part:
-                        headers_raw, file_data = part.split(b"\r\n\r\n", 1)
-                        file_bytes = file_data.rstrip(b"\r\n")
-                        for h_line in headers_raw.split(b"\r\n"):
-                            if b"filename=" in h_line:
-                                filename = h_line.split(b'filename="')[1].split(b'"')[0].decode("utf-8", errors="ignore")
-                            if b"Content-Type:" in h_line:
-                                f_content_type = h_line.split(b": ")[1].decode("utf-8", errors="ignore").strip()
+                try:
+                    full_raw = f"Content-Type: {content_type_header}\r\n\r\n".encode("utf-8") + raw_body
+                    msg = email.message_from_bytes(full_raw, policy=email.policy.default)
+                    if msg.is_multipart():
+                        for part in msg.iter_parts():
+                            p_name = part.get_param("name", header="content-disposition")
+                            if p_name == "token":
+                                tok_val = part.get_payload(decode=True)
+                                if tok_val:
+                                    token = tok_val.decode("utf-8", errors="ignore").strip()
+                            elif p_name == "chat_type":
+                                ct_val = part.get_payload(decode=True)
+                                if ct_val:
+                                    chat_type = ct_val.decode("utf-8", errors="ignore").strip()
+                            elif p_name == "target_id":
+                                tid_val = part.get_payload(decode=True)
+                                if tid_val:
+                                    target_id = tid_val.decode("utf-8", errors="ignore").strip()
+                            elif p_name == "file":
+                                fn = part.get_filename()
+                                if fn:
+                                    filename = fn
+                                f_content_type = part.get_content_type() or "application/octet-stream"
+                                file_bytes = part.get_payload(decode=True) or b""
+                except Exception as parse_err:
+                    logger.warning("[WEB] Multipart parse warning: %s", parse_err)
 
             try:
                 resp = self.grpc_stub.UploadFile(
@@ -374,6 +389,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                         content_type=f_content_type,
                     )
                 )
+                err_msg = resp.message if hasattr(resp, "message") else ""
                 self._send_json(200, {
                     "success": resp.success,
                     "file": {
@@ -382,10 +398,14 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                         "file_type": resp.file.file_type,
                         "size_bytes": resp.file.size_bytes,
                     } if resp.success else None,
-                    "error": resp.error,
+                    "message": err_msg,
+                    "error": err_msg,
                 })
             except grpc.RpcError as e:
                 self._send_json(400, {"success": False, "error": e.details()})
+            except Exception as exc:
+                logger.error("[WEB] File upload error: %s", exc, exc_info=True)
+                self._send_json(500, {"success": False, "error": f"Upload processing error: {str(exc)}"})
             return
 
         # POST /api/llm/smart-reply

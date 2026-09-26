@@ -324,21 +324,23 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             request_id=request.request_id,
         )
         if not ok:
-            return chat_pb2.UploadFileResponse(success=False, error=err)
+            return chat_pb2.UploadFileResponse(success=False, message=err)
         return chat_pb2.UploadFileResponse(
             success=True,
             file=self._to_file_proto(meta),
+            message="",
         )
 
     def DownloadFile(self, request, context):
         self._require_auth(request.token, context)
         ok, data, meta, err = self.files.download_file(request.file_id)
         if not ok:
-            return chat_pb2.DownloadFileResponse(success=False, error=err)
+            return chat_pb2.DownloadFileResponse(success=False, message=err)
         return chat_pb2.DownloadFileResponse(
             success=True,
             data=data,
             file=self._to_file_proto(meta),
+            message="",
         )
 
     # ── LLM Features (Passing Full Chat History) ──────────────────────────────
