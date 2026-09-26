@@ -8,6 +8,7 @@ __pycache__/
 venv/
 generated/
 docs/
+logs/
 
 # C extensions
 *.so

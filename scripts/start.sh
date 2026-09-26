@@ -5,6 +5,12 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd "$script_dir/.." && pwd)"
 cd "$project_root"
 
+# Setup log directory and clear log file on every start
+mkdir -p logs
+log_file="logs/app.log"
+: > "$log_file"
+printf '[LOGS] Initialized clean log file at: %s\n' "$log_file"
+
 # 1. Virtual environment setup and dependency verification
 if command -v python3 >/dev/null 2>&1; then
   if [ ! -d ".venv" ]; then
@@ -111,10 +117,11 @@ printf ' DISTRIBUTED REAL-TIME CHAT & COLLABORATION PLATFORM\n'
 printf '=================================================================\n'
 printf ' Web UI available at: http://localhost:8000\n'
 printf ' gRPC Server port:    localhost:50051\n'
-printf ' LLM Server port:     localhost:50060\n\n'
-printf ' Cluster is live and running. Open http://localhost:8000 in browser.\n'
-printf ' Press Ctrl+C to shut down.\n'
+printf ' LLM Server port:     localhost:50060\n'
+printf ' Log file location:   %s (cleared on start)\n\n' "$log_file"
+printf ' Cluster is live. Open http://localhost:8000 in your browser.\n'
+printf ' To stop the cluster: run bash scripts/stop.sh or press Ctrl+C here.\n'
 printf '=================================================================\n\n'
 
-# Stream service logs live until user presses Ctrl+C
-docker compose logs -f --tail=20 app-node-1 llm-server
+# Stream service logs live to console and log file until user presses Ctrl+C
+docker compose logs -f --tail=20 app-node-1 llm-server | tee -a "$log_file"

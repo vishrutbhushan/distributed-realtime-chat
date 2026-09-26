@@ -13,15 +13,19 @@ A distributed real-time chat and collaboration platform designed to demonstrate:
 
 ## 1. Quick Start
 
-### Run the Application Script (Live Web UI)
-The startup scripts automatically create/select a Python virtual environment, install dependencies, compile protobuf stubs, clean up any previous containers, build images with static self-tests, and start the application cluster.
+### Starting and Stopping the Application
+Two dedicated scripts are provided for each platform: **start** (launches the stack, runs static tests, streams logs to console and `logs/app.log`) and **stop** (cleanly tears down all containers, volumes, and background processes).
 
-| Operating System | Terminal / Shell | Command to Run |
+| Operating System | Start Command | Stop Command |
 |---|---|---|
-| **Windows** | Command Prompt (`cmd.exe`) | `.\scripts\start.bat` |
-| **Windows** | PowerShell | `.\scripts\start.ps1` |
-| **macOS (MacBook)** | Terminal (`bash` / `zsh`) | `bash scripts/start.sh` |
-| **Linux** | Terminal (`bash` / `zsh`) | `bash scripts/start.sh` |
+| **Windows (CMD)** | `.\scripts\start.bat` | `.\scripts\stop.bat` |
+| **Windows (PowerShell)** | `.\scripts\start.ps1` | `.\scripts\stop.ps1` |
+| **macOS (MacBook)** | `bash scripts/start.sh` | `bash scripts/stop.sh` |
+| **Linux** | `bash scripts/start.sh` | `bash scripts/stop.sh` |
+
+#### Logging (`logs/app.log`)
+- On every start, `logs/app.log` is **cleared and re-initialized** automatically.
+- All service logs from both the application node and the LLM engine are streamed live to the console and appended to `logs/app.log`.
 
 #### Hardware Acceleration (GPU / Apple Silicon / CPU)
 The LLM inference engine automatically detects and utilizes available hardware:
@@ -31,10 +35,8 @@ The LLM inference engine automatically detects and utilizes available hardware:
 - Manual override: Set `MODEL_N_GPU_LAYERS=0` for CPU or `-1` for full GPU offload in `docker-compose.yml`.
 
 #### Graceful Teardown (No Lingering Servers)
-When running any of the three scripts:
 - Open **[http://localhost:8000](http://localhost:8000)** in your browser to sign up and chat.
-- Live server logs stream in the console.
-- Press **`Ctrl+C`** or exit: The script automatically traps the signal and executes `docker compose down -v --remove-orphans`, ensuring **zero lingering containers or background processes**.
+- Press **`Ctrl+C`** in the start window or run the corresponding `stop` script from another window: all containers and volumes are cleanly dismantled with `docker compose down -v --remove-orphans`, leaving **zero lingering servers or background tasks**.
 ---
 
 ## 2. Key Requirements & Implementation
@@ -105,9 +107,12 @@ distributed-realtime-chat/
 │
 ├── docker-compose.yml      # Cluster deployment (App Node :50051/:8000, LLM Server :50060)
 └── scripts/
-    ├── start.bat           # Windows Command Prompt orchestrator
-    ├── start.ps1           # Windows PowerShell orchestrator
-    └── start.sh            # Linux / macOS Bash orchestrator
+    ├── start.bat           # Windows CMD launcher (clears logs, starts cluster)
+    ├── stop.bat            # Windows CMD teardown (cleans containers & volumes)
+    ├── start.ps1           # PowerShell launcher (clears logs, starts cluster)
+    ├── stop.ps1            # PowerShell teardown (cleans containers & volumes)
+    ├── start.sh            # Linux/macOS launcher (clears logs, starts cluster)
+    └── stop.sh             # Linux/macOS teardown (cleans containers & volumes)
 ```
 
 ---

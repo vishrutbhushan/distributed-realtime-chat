@@ -7,9 +7,28 @@ $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $HasLocation = $false
 $ExitCode = 0
 
+function Stop-Cluster {
+    Write-Host ''
+    Write-Host 'Shutting down services and cleaning up volumes (no lingering containers)...' -ForegroundColor Cyan
+    & docker compose down -v --remove-orphans
+}
+
 try {
     Push-Location -LiteralPath $ProjectRoot
     $HasLocation = $true
+
+    # Setup log directory and clear log file on every start
+    $LogDir = Join-Path $ProjectRoot 'logs'
+    if (-not (Test-Path $LogDir)) {
+        New-Item -ItemType Directory -Path $LogDir | Out-Null
+    }
+    $LogFile = Join-Path $LogDir 'app.log'
+    if (Test-Path $LogFile) {
+        Clear-Content -Path $LogFile -ErrorAction SilentlyContinue
+    } else {
+        New-Item -ItemType File -Path $LogFile | Out-Null
+    }
+    Write-Host "[LOGS] Initialized clean log file at: $LogFile" -ForegroundColor Cyan
 
     # 1. Virtual environment setup and dependency verification
     if (Get-Command python -ErrorAction SilentlyContinue) {
@@ -109,23 +128,22 @@ try {
     Write-Host ' Web UI available at: http://localhost:8000' -ForegroundColor Green
     Write-Host ' gRPC Server port:    localhost:50051' -ForegroundColor White
     Write-Host ' LLM Server port:     localhost:50060' -ForegroundColor White
+    Write-Host " Log file location:   $LogFile (cleared on start)" -ForegroundColor Yellow
     Write-Host ''
-    Write-Host ' Cluster is live and running. Open http://localhost:8000 in browser.' -ForegroundColor Yellow
-    Write-Host ' Press Ctrl+C to shut down.' -ForegroundColor DarkGray
+    Write-Host ' Cluster is live. Open http://localhost:8000 in your browser.' -ForegroundColor Yellow
+    Write-Host ' To stop the cluster: run .\scripts\stop.ps1 or press Ctrl+C here.' -ForegroundColor DarkGray
     Write-Host '=================================================================' -ForegroundColor Cyan
     Write-Host ''
 
-    # Stream service logs live until user presses Ctrl+C
-    & docker compose logs -f --tail=20 app-node-1 llm-server
+    # Stream service logs live to both console and logs/app.log until user presses Ctrl+C
+    & docker compose logs -f --tail=20 app-node-1 llm-server | Tee-Object -FilePath $LogFile -Append
 }
 catch {
     Write-Host "Startup failed: $($_.Exception.Message)" -ForegroundColor Red
     $ExitCode = 1
 }
 finally {
-    Write-Host ''
-    Write-Host 'Shutting down services and cleaning up volumes...' -ForegroundColor Cyan
-    & docker compose down -v --remove-orphans
+    Stop-Cluster
     if ($HasLocation) {
         Pop-Location
     }

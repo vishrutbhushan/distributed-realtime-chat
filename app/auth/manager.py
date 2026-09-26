@@ -178,8 +178,9 @@ class AuthManager:
                 "UPDATE users SET last_seen = ?, status = 'active' WHERE user_id = ? AND last_seen < ?",
                 (now, row["user_id"], now - 10),
             )
+            self.db.commit()
         except Exception:
-            pass
+            self.db.rollback()
 
         return dict(row)
 
