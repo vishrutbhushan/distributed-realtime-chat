@@ -1,7 +1,8 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 set "SCRIPT_DIR=%~dp0"
-cd /d "%SCRIPT_DIR%"
+set "PROJECT_ROOT=%SCRIPT_DIR%.."
+cd /d "%PROJECT_ROOT%"
 
 echo [1/3] Checking Python virtual environment...
 if not exist ".venv" (
@@ -17,7 +18,12 @@ if exist ".venv\Scripts\python.exe" (
     ".venv\Scripts\python.exe" -m grpc_tools.protoc -I ./proto --python_out=./generated --grpc_python_out=./generated ./proto/chat.proto ./proto/llm.proto
 )
 
-:run_ps
 echo [3/3] Launching application cluster...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%scripts\start.ps1" %*
-exit /b %ERRORLEVEL%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%start.ps1" %*
+set "EXIT_CODE=%ERRORLEVEL%"
+
+:: Guarantee that no lingering Docker containers remain when batch exits
+echo.
+echo Shutting down services and cleaning up volumes...
+docker compose down -v --remove-orphans >nul 2>&1
+exit /b %EXIT_CODE%

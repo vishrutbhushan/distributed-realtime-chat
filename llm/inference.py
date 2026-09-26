@@ -53,11 +53,62 @@ class ChatInference:
         self._slot = threading.BoundedSemaphore(1)
         self._timeout_seconds = max(1, int(os.environ.get("MODEL_TIMEOUT_SECONDS", "60")))
 
+    @staticmethod
+    def _detect_gpu_layers() -> int:
+        """
+        Detect hardware acceleration capability:
+        - Explicit MODEL_N_GPU_LAYERS override
+        - Apple Silicon Metal (macOS M1/M2/M3/M4) -> -1 (all layers)
+        - NVIDIA CUDA (Linux / Windows) -> -1 (all layers)
+        - Fallback: 0 (CPU)
+        """
+        env_val = os.environ.get("MODEL_N_GPU_LAYERS")
+        if env_val is not None:
+            try:
+                layers = int(env_val)
+                logger.info("[LLM] Hardware acceleration configured via MODEL_N_GPU_LAYERS=%d", layers)
+                return layers
+            except ValueError:
+                pass
+
+        # 1. Apple Silicon Metal (macOS)
+        import platform
+        if platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64"):
+            logger.info("[LLM] Apple Silicon detected (Metal acceleration enabled).")
+            return -1
+
+        # 2. NVIDIA CUDA check via torch if installed
+        try:
+            import torch
+            if torch.cuda.is_available():
+                logger.info("[LLM] NVIDIA CUDA detected via torch: %s", torch.cuda.get_device_name(0))
+                return -1
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                logger.info("[LLM] Apple Silicon MPS detected via torch.")
+                return -1
+        except Exception:
+            pass
+
+        # 3. NVIDIA CUDA check via nvidia-smi command
+        import shutil
+        if shutil.which("nvidia-smi") is not None:
+            logger.info("[LLM] NVIDIA GPU detected via nvidia-smi (CUDA acceleration enabled).")
+            return -1
+
+        # 4. Linux /proc/driver/nvidia check
+        if os.path.exists("/proc/driver/nvidia"):
+            logger.info("[LLM] NVIDIA driver detected via /proc/driver/nvidia (CUDA acceleration enabled).")
+            return -1
+
+        logger.info("[LLM] No GPU detected; using CPU inference.")
+        return 0
+
     @classmethod
     def from_env(cls):
         """
         Load model specified by MODEL_PATH.
-        If file does not exist or llama_cpp is missing, falls back cleanly to mock.
+        Auto-detects GPU (CUDA / Apple Silicon Metal) and offloads layers if available.
+        Falls back cleanly to CPU or rule-based mock engine.
         """
         model_path = Path(os.environ.get("MODEL_PATH", DEFAULT_MODEL_PATH))
         if not model_path.is_file():
@@ -72,15 +123,36 @@ class ChatInference:
 
         n_ctx = int(os.environ.get("MODEL_N_CTX", "4096"))
         n_threads = int(os.environ.get("MODEL_THREADS", "4"))
-        logger.info("[LLM] Loading GGUF model=%s (ctx=%d, threads=%d)...", model_path, n_ctx, n_threads)
-        model = Llama(
-            model_path=str(model_path),
-            n_ctx=n_ctx,
-            n_threads=n_threads,
-            n_batch=256,
-            verbose=False,
-        )
-        logger.info("[LLM] Local GGUF model successfully loaded into RAM.")
+        n_gpu_layers = cls._detect_gpu_layers()
+
+        logger.info("[LLM] Loading GGUF model=%s (ctx=%d, threads=%d, gpu_layers=%d)...",
+                    model_path, n_ctx, n_threads, n_gpu_layers)
+        try:
+            model = Llama(
+                model_path=str(model_path),
+                n_ctx=n_ctx,
+                n_threads=n_threads,
+                n_gpu_layers=n_gpu_layers,
+                n_batch=256,
+                verbose=False,
+            )
+            device_mode = "GPU (accelerated)" if n_gpu_layers != 0 else "CPU"
+            logger.info("[LLM] Local GGUF model successfully loaded into memory (%s mode).", device_mode)
+        except Exception as exc:
+            if n_gpu_layers != 0:
+                logger.warning("[LLM] Failed loading with GPU layers (%s). Falling back to CPU...", exc)
+                model = Llama(
+                    model_path=str(model_path),
+                    n_ctx=n_ctx,
+                    n_threads=n_threads,
+                    n_gpu_layers=0,
+                    n_batch=256,
+                    verbose=False,
+                )
+                logger.info("[LLM] Local GGUF model loaded in CPU fallback mode.")
+            else:
+                raise
+
         return cls(model=model, is_mock=False)
 
     def _complete(self, prompt: str, max_tokens: int, temperature: float) -> str:

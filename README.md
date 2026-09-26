@@ -14,23 +14,27 @@ A distributed real-time chat and collaboration platform designed to demonstrate:
 ## 1. Quick Start
 
 ### Run the Application Script (Live Web UI)
-The startup script automatically handles Python virtual environment creation/selection, dependencies, performs a clean-slate teardown (`docker compose down -v`), rebuilds images executing static self-tests at build time, starts the application and local LLM services, and keeps the cluster live for interactive browser usage:
+The startup scripts automatically create/select a Python virtual environment, install dependencies, compile protobuf stubs, clean up any previous containers, build images with static self-tests, and start the application cluster.
 
-**Windows (Command Prompt / PowerShell / File Explorer)**:
-```cmd
-.\start.bat
-```
-*(or via PowerShell directly: `powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1`)*
+| Operating System | Terminal / Shell | Command to Run |
+|---|---|---|
+| **Windows** | Command Prompt (`cmd.exe`) | `.\scripts\start.bat` |
+| **Windows** | PowerShell | `.\scripts\start.ps1` |
+| **macOS (MacBook)** | Terminal (`bash` / `zsh`) | `bash scripts/start.sh` |
+| **Linux** | Terminal (`bash` / `zsh`) | `bash scripts/start.sh` |
 
-**Linux / macOS (Bash)**:
-```bash
-bash scripts/start.sh
-```
+#### Hardware Acceleration (GPU / Apple Silicon / CPU)
+The LLM inference engine automatically detects and utilizes available hardware:
+- **NVIDIA GPUs (CUDA)**: Auto-detected; offloads model layers to VRAM.
+- **Apple Silicon (MacBook M1/M2/M3/M4)**: Auto-detected; leverages Metal acceleration.
+- **CPU Fallback**: If no GPU is present or GPU memory is exhausted, it seamlessly falls back to CPU inference.
+- Manual override: Set `MODEL_N_GPU_LAYERS=0` for CPU or `-1` for full GPU offload in `docker-compose.yml`.
 
-Once running:
+#### Graceful Teardown (No Lingering Servers)
+When running any of the three scripts:
 - Open **[http://localhost:8000](http://localhost:8000)** in your browser to sign up and chat.
-- Live logs stream in the console.
-- Press **`Ctrl+C`** to gracefully shut down the cluster and clean up volumes.
+- Live server logs stream in the console.
+- Press **`Ctrl+C`** or exit: The script automatically traps the signal and executes `docker compose down -v --remove-orphans`, ensuring **zero lingering containers or background processes**.
 ---
 
 ## 2. Key Requirements & Implementation
@@ -100,10 +104,10 @@ distributed-realtime-chat/
 │   └── Dockerfile.llm      # LLM Server image (build-time static tests + proto compilation)
 │
 ├── docker-compose.yml      # Cluster deployment (App Node :50051/:8000, LLM Server :50060)
-├── start.bat               # Windows one-click startup (venv, deps, docker)
 └── scripts/
-    ├── start.ps1           # PowerShell orchestrator
-    └── start.sh            # Linux/macOS orchestrator
+    ├── start.bat           # Windows Command Prompt orchestrator
+    ├── start.ps1           # Windows PowerShell orchestrator
+    └── start.sh            # Linux / macOS Bash orchestrator
 ```
 
 ---
