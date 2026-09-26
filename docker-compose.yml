@@ -1,12 +1,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Distributed Real-time Chat and Collaboration Tool — Docker Compose
-# Milestone 1: App Node + CPU-optimized LLM Server + Automated Client Runner
-# Web UI Gateway available at http://localhost:8000
+# Milestone 1: App Node (gRPC + Web UI) + Dedicated Local LLM Server + Demo Runner
+# Web UI Gateway available at: http://localhost:8000
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── LLM Server (Standalone Instance, port 50060) ───────────────────────────
+  # ── LLM Server (Dedicated Instance, port 50060) ────────────────────────────
   llm-server:
     build:
       context: .
@@ -16,20 +16,21 @@ services:
       - "50060:50060"
     environment:
       LLM_PORT: "50060"
+      MODEL_PATH: "/models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+      MODEL_N_CTX: "4096"
+      MODEL_THREADS: "4"
+      MODEL_TIMEOUT_SECONDS: "60"
     networks:
       - chat-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c",
-             "import grpc; import sys; sys.path.insert(0,'generated');\
-              import llm_pb2_grpc, llm_pb2;\
-              ch=grpc.insecure_channel('localhost:50060');\
-              stub=llm_pb2_grpc.LLMServiceStub(ch);\
-              stub.GetLLMAnswer(llm_pb2.LLMRequest(request_id='hc',query='ping',feature='SMART_REPLY'))"]
+             "import grpc; ch=grpc.insecure_channel('localhost:50060');\
+              grpc.channel_ready_future(ch).result(timeout=2); ch.close()"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 12
+      start_period: 120s
 
   # ── App Node 1 (Monolith: gRPC :50051 + Web Gateway :8000) ─────────────────
   app-node-1:
@@ -47,22 +48,16 @@ services:
       DB_PATH:           "/data/chat.db"
       FILE_STORAGE_PATH: "/data/files/"
       LLM_SERVER:        "llm-server:50060"
-      # PEERS: ""   # comma-separated peer addresses for Milestone 2
+      # PEERS: ""   # Comma-separated peer addresses for Milestone 2
     volumes:
       - node1-data:/data
-    depends_on:
-      llm-server:
-        condition: service_healthy
     networks:
       - chat-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c",
-             "import grpc; import sys; sys.path.insert(0,'generated');\
-              import chat_pb2_grpc, chat_pb2;\
-              ch=grpc.insecure_channel('localhost:50051');\
-              stub=chat_pb2_grpc.ChatServiceStub(ch);\
-              stub.GetNodeStatus(chat_pb2.GetNodeStatusRequest())"]
+             "import grpc; ch=grpc.insecure_channel('localhost:50051');\
+              grpc.channel_ready_future(ch).result(timeout=2); ch.close()"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -85,7 +80,7 @@ services:
     restart: "no"   # run once then exit
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Milestone 2 additions (copy-paste and uncomment for Raft cluster):
+# Milestone 2 additions (copy-paste and uncomment for 5-node Raft cluster):
 #
 #  app-node-2:
 #    build: {context: ., dockerfile: docker/Dockerfile.app}
@@ -101,9 +96,9 @@ services:
 #    ports:   ["50052:50052", "8002:8002"]
 # ─────────────────────────────────────────────────────────────────────────────
 
+volumes:
+  node1-data:
+
 networks:
   chat-net:
     driver: bridge
-
-volumes:
-  node1-data:

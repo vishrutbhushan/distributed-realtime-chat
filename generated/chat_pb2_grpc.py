@@ -27,7 +27,7 @@ if _version_not_supported:
 
 class ChatServiceStub:
     """─────────────────────────────────────────────────────────────
-    ChatService Definition
+    Service Definition
     ─────────────────────────────────────────────────────────────
 
     """
@@ -157,7 +157,7 @@ class ChatServiceStub:
 
 class ChatServiceServicer:
     """─────────────────────────────────────────────────────────────
-    ChatService Definition
+    Service Definition
     ─────────────────────────────────────────────────────────────
 
     """
@@ -182,7 +182,7 @@ class ChatServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def ListUsers(self, request, context):
-        """Users & Presence
+        """Directory & Presence
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -201,7 +201,7 @@ class ChatServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def SendDirectMessage(self, request, context):
-        """Direct Messages
+        """Direct Messaging
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -214,7 +214,7 @@ class ChatServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def CreateGroup(self, request, context):
-        """Groups
+        """Group Management & Messaging
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -271,7 +271,7 @@ class ChatServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def GetSmartReplies(self, request, context):
-        """LLM Proxy
+        """LLM Features
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -284,7 +284,7 @@ class ChatServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def Post(self, request, context):
-        """Assignment Generic Signatures
+        """Assignment Signatures
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -437,7 +437,7 @@ def add_ChatServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class ChatService:
     """─────────────────────────────────────────────────────────────
-    ChatService Definition
+    Service Definition
     ─────────────────────────────────────────────────────────────
 
     """

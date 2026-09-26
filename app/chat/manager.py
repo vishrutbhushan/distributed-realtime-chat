@@ -106,6 +106,20 @@ class ChatManager:
             self.db.commit()
         except Exception as exc:
             self.db.rollback()
+            if "UNIQUE" in str(exc) and client_request_id:
+                existing = self.db.fetchone(
+                    """
+                    SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
+                    FROM messages m
+                    JOIN users u ON m.sender_id = u.user_id
+                    LEFT JOIN files f ON m.file_id = f.file_id
+                    WHERE m.client_request_id = ?
+                    """,
+                    (client_request_id,),
+                )
+                if existing:
+                    logger.info("[CHAT] Concurrent replay for DM request_id=%s", client_request_id)
+                    return True, dict(existing), ""
             logger.error("[CHAT] send_dm insert error: %s", exc)
             return False, {}, str(exc)
 
@@ -426,6 +440,20 @@ class ChatManager:
             self.db.commit()
         except Exception as exc:
             self.db.rollback()
+            if "UNIQUE" in str(exc) and client_request_id:
+                existing = self.db.fetchone(
+                    """
+                    SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
+                    FROM messages m
+                    JOIN users u ON m.sender_id = u.user_id
+                    LEFT JOIN files f ON m.file_id = f.file_id
+                    WHERE m.client_request_id = ?
+                    """,
+                    (client_request_id,),
+                )
+                if existing:
+                    logger.info("[CHAT] Concurrent replay for group message request_id=%s", client_request_id)
+                    return True, dict(existing), ""
             logger.error("[CHAT] send_group_message insert error: %s", exc)
             return False, {}, str(exc)
 

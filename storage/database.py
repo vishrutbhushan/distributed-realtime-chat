@@ -26,6 +26,7 @@ class Database:
         self.db_path = db_path
         self._local  = threading.local()
         self._lock   = threading.RLock()
+        self._all_conns = []
         os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
         self._init_schema()
         logger.info("[DB] Initialised at %s", db_path)
@@ -39,6 +40,8 @@ class Database:
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL")
+        with self._lock:
+            self._all_conns.append(conn)
         return conn
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -50,6 +53,18 @@ class Database:
     @property
     def conn(self) -> sqlite3.Connection:
         return self._get_conn()
+
+    def close(self):
+        """Close all connections across threads."""
+        with self._lock:
+            for conn in self._all_conns:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._all_conns.clear()
+            if hasattr(self._local, "conn"):
+                self._local.conn = None
 
     def _init_schema(self):
         """Create all tables on startup (idempotent). NO default users or channels."""

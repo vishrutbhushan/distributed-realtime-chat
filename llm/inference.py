@@ -1,17 +1,18 @@
 """
 LLM inference engine.
 
-Milestone 1: Rule-based mock responses (no model needed).
-The actual model loading code is commented out below.
-
-To enable a real LLM, uncomment one of the model backends and set
-the MODEL_PATH / MODEL_NAME environment variable.
+Loads a local CPU-optimized GGUF model (Qwen2.5-1.5B-Instruct) via llama-cpp-python,
+with concurrency throttling via BoundedSemaphore, timeout guards, and graceful
+mock fallback if no local model is installed.
 """
 
 import logging
 import os
 import re
-from typing import List
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from pathlib import Path
+from typing import Iterable, List
 
 from llm.prompts import (
     format_context_suggestion,
@@ -21,133 +22,150 @@ from llm.prompts import (
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Model configuration (uncomment ONE backend)
-# ─────────────────────────────────────────────────────────────────────────────
-
-# MODEL_PATH = os.environ.get("MODEL_PATH", "/models/model.gguf")
-# MODEL_NAME = os.environ.get("MODEL_NAME", "microsoft/phi-2")
-
-# --- Backend A: llama.cpp (CPU-optimised, GGUF format) ---
-# from llama_cpp import Llama
-# _model = Llama(model_path=MODEL_PATH, n_ctx=2048, n_threads=4, verbose=False)
-#
-# def _generate(prompt: str, max_tokens: int = 256) -> str:
-#     out = _model(prompt, max_tokens=max_tokens, stop=["\n\n"])
-#     return out["choices"][0]["text"].strip()
-
-# --- Backend B: Hugging Face Transformers (CPU) ---
-# from transformers import AutoTokenizer, AutoModelForCausalLM
-# import torch
-# _tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-# _model = AutoModelForCausalLM.from_pretrained(MODEL_NAME, torch_dtype=torch.float32)
-# _model.eval()
-#
-# def _generate(prompt: str, max_tokens: int = 256) -> str:
-#     inputs = _tokenizer(prompt, return_tensors="pt")
-#     with torch.no_grad():
-#         out = _model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
-#     return _tokenizer.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
-
-# --- Backend C: Ollama REST API ---
-# import requests
-# OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-# OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "phi3")
-#
-# def _generate(prompt: str, max_tokens: int = 256) -> str:
-#     resp = requests.post(
-#         f"{OLLAMA_URL}/api/generate",
-#         json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False,
-#               "options": {"num_predict": max_tokens}},
-#         timeout=60,
-#     )
-#     resp.raise_for_status()
-#     return resp.json()["response"].strip()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Mock fallback (used when no model backend is configured)
-# ─────────────────────────────────────────────────────────────────────────────
-
-USE_MOCK = True  # Set False when a real model backend is uncommented above
+DEFAULT_MODEL_PATH = "/models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+MAX_CONTEXT_CHARS = 8000
 
 
-def _generate(prompt: str, max_tokens: int = 256) -> str:  # noqa: F811 (shadow)
-    """Mock generator — returns rule-based text."""
-    return "[MOCK] LLM not configured. See llm/inference.py to enable a model."
+def _bound_messages(messages: Iterable[str], max_chars: int = MAX_CONTEXT_CHARS) -> List[str]:
+    """Keep the newest conversation lines within a conservative prompt character budget."""
+    bounded = []
+    used = 0
+    for message in reversed(list(messages)):
+        line = str(message)
+        remaining = max_chars - used
+        if remaining <= 0:
+            break
+        if len(line) > remaining:
+            line = line[-remaining:]
+        bounded.append(line)
+        used += len(line) + 1
+    bounded.reverse()
+    return bounded
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Feature implementations
-# ─────────────────────────────────────────────────────────────────────────────
+class ChatInference:
+    """Shared local LLM inference instance; bounded calls run one at a time."""
 
-_QUESTION_REPLIES  = ["Sure, sounds good!", "Yes, I'll be there.", "Can we discuss this further?"]
-_MEETING_REPLIES   = ["I'll add it to my calendar.", "Works for me!", "Can we push it by 30 minutes?"]
-_HELP_REPLIES      = ["I'm on it!", "Let me check and get back to you.", "Happy to help."]
-_GENERIC_REPLIES   = ["Got it, thanks!", "Will do.", "Sounds good — let me know if you need anything else."]
+    def __init__(self, model=None, is_mock: bool = False):
+        self._model = model
+        self.is_mock = is_mock
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-llm")
+        self._slot = threading.BoundedSemaphore(1)
+        self._timeout_seconds = max(1, int(os.environ.get("MODEL_TIMEOUT_SECONDS", "60")))
 
+    @classmethod
+    def from_env(cls):
+        """
+        Load model specified by MODEL_PATH.
+        If file does not exist or llama_cpp is missing, falls back cleanly to mock.
+        """
+        model_path = Path(os.environ.get("MODEL_PATH", DEFAULT_MODEL_PATH))
+        if not model_path.is_file():
+            logger.warning("[LLM] Model not found at %s. Falling back to rule-based mock engine.", model_path)
+            return cls(model=None, is_mock=True)
 
-def _mock_smart_replies(current_message: str) -> List[str]:
-    msg = current_message.lower()
-    if "?" in msg:
-        return _QUESTION_REPLIES
-    if any(w in msg for w in ("meet", "meeting", "call", "pm", "am", "schedule")):
-        return _MEETING_REPLIES
-    if any(w in msg for w in ("help", "issue", "problem", "error", "fail", "bug")):
-        return _HELP_REPLIES
-    return _GENERIC_REPLIES
+        try:
+            from llama_cpp import Llama
+        except ImportError as exc:
+            logger.warning("[LLM] llama-cpp-python not installed (%s). Falling back to mock engine.", exc)
+            return cls(model=None, is_mock=True)
 
+        n_ctx = int(os.environ.get("MODEL_N_CTX", "4096"))
+        n_threads = int(os.environ.get("MODEL_THREADS", "4"))
+        logger.info("[LLM] Loading GGUF model=%s (ctx=%d, threads=%d)...", model_path, n_ctx, n_threads)
+        model = Llama(
+            model_path=str(model_path),
+            n_ctx=n_ctx,
+            n_threads=n_threads,
+            n_batch=256,
+            verbose=False,
+        )
+        logger.info("[LLM] Local GGUF model successfully loaded into RAM.")
+        return cls(model=model, is_mock=False)
 
-def _mock_summarize(messages: List[str], channel_name: str) -> str:
-    n = len(messages)
-    participants = set()
-    for m in messages:
-        if ": " in m:
-            participants.add(m.split(": ")[0])
-    return (
-        f"Summary of #{channel_name} ({n} messages):\n"
-        + (f"  - Participants: {', '.join(sorted(participants))}\n" if participants else "")
-        + f"  - {n} messages exchanged.\n"
-        + "  - (Enable a real LLM in llm/inference.py for intelligent summaries.)"
-    )
+    def _complete(self, prompt: str, max_tokens: int, temperature: float) -> str:
+        if self.is_mock or self._model is None:
+            return self._mock_complete(prompt)
 
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You assist people collaborating in a team chat. Ground every answer "
+                    "in the supplied conversation. Do not invent decisions, events, or facts."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        if not self._slot.acquire(blocking=False):
+            raise RuntimeError("Local LLM is busy processing another request; retry shortly")
+        try:
+            future = self._executor.submit(
+                self._model.create_chat_completion,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+        except Exception:
+            self._slot.release()
+            raise
 
-def _mock_context_suggestion(recent_messages: List[str], channel_name: str, current_user: str) -> str:
-    msgs_text = " ".join(recent_messages).lower()
-    if any(w in msgs_text for w in ("deploy", "build", "ci", "pipeline")):
-        return f"Suggested action: Review the deployment logs and share findings in #{channel_name}."
-    if any(w in msgs_text for w in ("meet", "agenda", "schedule")):
-        return "Suggested action: Confirm attendance and share the meeting agenda."
-    if any(w in msgs_text for w in ("bug", "error", "issue", "fail")):
-        return "Suggested action: Reproduce the issue locally and open a bug report."
-    return f"Suggested action: Continue the discussion and summarise next steps in #{channel_name}."
+        future.add_done_callback(lambda _: self._slot.release())
+        try:
+            response = future.result(timeout=self._timeout_seconds)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Local model inference exceeded timeout limit of {self._timeout_seconds} seconds"
+            ) from exc
 
+        answer = response["choices"][0]["message"]["content"]
+        answer = (answer or "").strip()
+        if not answer:
+            raise RuntimeError("The local model returned an empty response")
+        return answer
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Public API
-# ─────────────────────────────────────────────────────────────────────────────
+    def _mock_complete(self, prompt: str) -> str:
+        """Rule-based mock generator for development and environments without GGUF weights."""
+        if "generate exactly 3" in prompt.lower():
+            return "Sounds good, thanks for confirming!\nI'll check the details and report back.\nLet me know if you need any assistance."
+        if "summary" in prompt.lower():
+            return "• Discussion ongoing in chat.\n• Key points shared between participants.\n• Action items logged."
+        return "Suggested action: Follow up on the latest message and confirm details."
 
-def get_smart_replies(
-    recent_messages: List[str], current_message: str, channel_name: str
-) -> List[str]:
-    if USE_MOCK:
-        return _mock_smart_replies(current_message)
-    prompt = format_smart_reply(channel_name, recent_messages, current_message)
-    raw = _generate(prompt, max_tokens=128)
-    lines = [l.strip() for l in raw.splitlines() if l.strip()]
-    return lines[:3] if lines else [raw]
+    def smart_replies(
+        self, recent_messages: List[str], current_message: str, context_title: str = "Chat"
+    ) -> List[str]:
+        prompt = format_smart_reply(
+            context_title,
+            _bound_messages(recent_messages),
+            current_message,
+        )
+        raw = self._complete(prompt, max_tokens=160, temperature=0.25)
+        replies = []
+        for line in raw.splitlines():
+            cleaned = re.sub(r"^\s*(?:\d+[.)]|[-*])\s*", "", line).strip()
+            if cleaned and cleaned.lower() not in {item.lower() for item in replies}:
+                replies.append(cleaned)
+        if len(replies) < 3:
+            # Pad with sensible fallbacks if model output had fewer than 3 lines
+            defaults = ["Sounds good!", "I'll look into it.", "Understood, thanks!"]
+            for d in defaults:
+                if len(replies) >= 3:
+                    break
+                if d.lower() not in {item.lower() for item in replies}:
+                    replies.append(d)
+        return replies[:3]
 
+    def summarize(self, messages: List[str], context_title: str = "Chat") -> str:
+        prompt = format_summarize(context_title, _bound_messages(messages))
+        return self._complete(prompt, max_tokens=256, temperature=0.1)
 
-def summarize_conversation(messages: List[str], channel_name: str) -> str:
-    if USE_MOCK:
-        return _mock_summarize(messages, channel_name)
-    prompt = format_summarize(channel_name, messages)
-    return _generate(prompt, max_tokens=256)
-
-
-def get_context_suggestion(
-    recent_messages: List[str], channel_name: str, current_user: str
-) -> str:
-    if USE_MOCK:
-        return _mock_context_suggestion(recent_messages, channel_name, current_user)
-    prompt = format_context_suggestion(channel_name, current_user, recent_messages)
-    return _generate(prompt, max_tokens=128)
+    def suggest(
+        self, recent_messages: List[str], context_title: str = "Chat", current_user: str = "user"
+    ) -> str:
+        prompt = format_context_suggestion(
+            context_title,
+            current_user,
+            _bound_messages(recent_messages),
+        )
+        return self._complete(prompt, max_tokens=128, temperature=0.15)

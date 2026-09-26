@@ -2,8 +2,8 @@
 LLM gRPC server.
 
 Exposes LLMService defined in proto/llm.proto.
-Operates on a standalone instance and processes full chat history.
-Actual model inference is in llm/inference.py (mocked by default, with CPU-optimized backends ready to uncomment).
+Runs on a dedicated node/container and loads the local CPU model before
+opening its gRPC port.
 """
 
 import logging
@@ -14,6 +14,7 @@ from concurrent import futures
 
 import grpc
 
+# Generated stubs
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _GENERATED = os.path.join(_ROOT, "generated")
 sys.path.insert(0, _GENERATED)
@@ -21,12 +22,7 @@ sys.path.insert(0, _ROOT)
 
 import llm_pb2
 import llm_pb2_grpc
-
-from llm.inference import (
-    get_context_suggestion,
-    get_smart_replies,
-    summarize_conversation,
-)
+from llm.inference import ChatInference
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,25 +36,36 @@ PORT = int(os.environ.get("LLM_PORT", "50060"))
 
 class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
 
+    def __init__(self, inference: ChatInference):
+        self.inference = inference
+
     def GetLLMAnswer(self, request, context):
         logger.info("[LLM] GetLLMAnswer feature=%s", request.feature)
         rid = request.request_id or str(uuid.uuid4())
-        feature = request.feature.upper()
+        feature = (request.feature or "").upper()
 
         try:
             if feature == "SMART_REPLY":
-                replies = get_smart_replies([], request.query, "Chat")
+                replies = self.inference.smart_replies(
+                    request.context.splitlines() if request.context else [],
+                    request.query,
+                    "Chat",
+                )
                 result = "\n".join(replies)
             elif feature == "SUMMARIZE":
-                result = summarize_conversation(
-                    request.context.splitlines(), "Chat"
+                result = self.inference.summarize(
+                    request.context.splitlines() if request.context else [],
+                    "Chat",
                 )
             elif feature == "SUGGEST":
-                result = get_context_suggestion(
-                    request.context.splitlines(), "Chat", "user"
+                result = self.inference.suggest(
+                    request.context.splitlines() if request.context else [],
+                    "Chat",
+                    "user",
                 )
             else:
-                result = get_smart_replies([], request.query, "Chat")[0]
+                replies = self.inference.smart_replies([], request.query, "Chat")
+                result = replies[0] if replies else "No response generated."
 
             return llm_pb2.LLMResponse(request_id=rid, result=result, success=True)
         except Exception as exc:
@@ -67,12 +74,21 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
 
     def GetSmartReplies(self, request, context):
         rid = request.request_id or str(uuid.uuid4())
-        logger.info("[LLM] SmartReplies title=%s msgs=%d", request.context_title, len(request.chat_history))
+        # Support both chat_history and recent_messages
+        history = []
+        if hasattr(request, "chat_history") and request.chat_history:
+            history = list(request.chat_history)
+        elif hasattr(request, "recent_messages") and request.recent_messages:
+            history = list(request.recent_messages)
+
+        title = getattr(request, "context_title", "") or getattr(request, "channel_name", "") or "Chat"
+        logger.info("[LLM] SmartReplies title='%s' msgs=%d", title, len(history))
+
         try:
-            suggestions = get_smart_replies(
-                list(request.chat_history),
+            suggestions = self.inference.smart_replies(
+                history,
                 request.current_message,
-                request.context_title or "Chat",
+                title,
             )
             return llm_pb2.SmartReplyResponse(
                 request_id=rid, suggestions=suggestions, success=True
@@ -85,14 +101,18 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
 
     def SummarizeConversation(self, request, context):
         rid = request.request_id or str(uuid.uuid4())
-        logger.info(
-            "[LLM] Summarize title=%s msgs=%d",
-            request.context_title, len(request.chat_history),
-        )
+        # Support both chat_history and messages
+        history = []
+        if hasattr(request, "chat_history") and request.chat_history:
+            history = list(request.chat_history)
+        elif hasattr(request, "messages") and request.messages:
+            history = list(request.messages)
+
+        title = getattr(request, "context_title", "") or getattr(request, "channel_name", "") or "Chat"
+        logger.info("[LLM] Summarize title='%s' msgs=%d", title, len(history))
+
         try:
-            summary = summarize_conversation(
-                list(request.chat_history), request.context_title or "Chat"
-            )
+            summary = self.inference.summarize(history, title)
             return llm_pb2.SummarizeResponse(
                 request_id=rid, summary=summary, success=True
             )
@@ -104,13 +124,18 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
 
     def GetContextSuggestion(self, request, context):
         rid = request.request_id or str(uuid.uuid4())
-        logger.info("[LLM] ContextSuggestion title=%s", request.context_title)
+        history = []
+        if hasattr(request, "chat_history") and request.chat_history:
+            history = list(request.chat_history)
+        elif hasattr(request, "recent_messages") and request.recent_messages:
+            history = list(request.recent_messages)
+
+        title = getattr(request, "context_title", "") or getattr(request, "channel_name", "") or "Chat"
+        user = getattr(request, "current_user", "user") or "user"
+        logger.info("[LLM] ContextSuggestion title='%s' user='%s'", title, user)
+
         try:
-            suggestion = get_context_suggestion(
-                list(request.chat_history),
-                request.context_title or "Chat",
-                request.current_user,
-            )
+            suggestion = self.inference.suggest(history, title, user)
             return llm_pb2.ContextSuggestionResponse(
                 request_id=rid, suggestion=suggestion, success=True
             )
@@ -122,19 +147,23 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
 
 
 def serve():
+    inference = ChatInference.from_env()
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=4),
         options=[
-            ("grpc.max_send_message_length",    64 * 1024 * 1024),
+            ("grpc.max_send_message_length", 64 * 1024 * 1024),
             ("grpc.max_receive_message_length", 64 * 1024 * 1024),
         ],
     )
-    llm_pb2_grpc.add_LLMServiceServicer_to_server(LLMServicer(), server)
+    llm_pb2_grpc.add_LLMServiceServicer_to_server(LLMServicer(inference), server)
     addr = f"[::]:{PORT}"
     server.add_insecure_port(addr)
     server.start()
     logger.info("[LLM] Server listening on %s", addr)
-    server.wait_for_termination()
+    try:
+        server.wait_for_termination()
+    except KeyboardInterrupt:
+        server.stop(grace=5)
 
 
 if __name__ == "__main__":

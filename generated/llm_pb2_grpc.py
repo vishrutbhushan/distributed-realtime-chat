@@ -27,7 +27,7 @@ if _version_not_supported:
 
 class LLMServiceStub:
     """─────────────────────────────────────────────────────────────
-    LLMService Definition
+    Service Definition
     ─────────────────────────────────────────────────────────────
 
     """
@@ -53,11 +53,16 @@ class LLMServiceStub:
                 request_serializer=llm__pb2.SummarizeRequest.SerializeToString,
                 response_deserializer=llm__pb2.SummarizeResponse.FromString,
                 _registered_method=True)
+        self.GetContextSuggestion = channel.unary_unary(
+                '/llm.LLMService/GetContextSuggestion',
+                request_serializer=llm__pb2.ContextSuggestionRequest.SerializeToString,
+                response_deserializer=llm__pb2.ContextSuggestionResponse.FromString,
+                _registered_method=True)
 
 
 class LLMServiceServicer:
     """─────────────────────────────────────────────────────────────
-    LLMService Definition
+    Service Definition
     ─────────────────────────────────────────────────────────────
 
     """
@@ -75,6 +80,12 @@ class LLMServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def SummarizeConversation(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetContextSuggestion(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -98,6 +109,11 @@ def add_LLMServiceServicer_to_server(servicer, server):
                     request_deserializer=llm__pb2.SummarizeRequest.FromString,
                     response_serializer=llm__pb2.SummarizeResponse.SerializeToString,
             ),
+            'GetContextSuggestion': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetContextSuggestion,
+                    request_deserializer=llm__pb2.ContextSuggestionRequest.FromString,
+                    response_serializer=llm__pb2.ContextSuggestionResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
             'llm.LLMService', rpc_method_handlers)
@@ -108,7 +124,7 @@ def add_LLMServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class LLMService:
     """─────────────────────────────────────────────────────────────
-    LLMService Definition
+    Service Definition
     ─────────────────────────────────────────────────────────────
 
     """
@@ -184,6 +200,33 @@ class LLMService:
             '/llm.LLMService/SummarizeConversation',
             llm__pb2.SummarizeRequest.SerializeToString,
             llm__pb2.SummarizeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetContextSuggestion(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/llm.LLMService/GetContextSuggestion',
+            llm__pb2.ContextSuggestionRequest.SerializeToString,
+            llm__pb2.ContextSuggestionResponse.FromString,
             options,
             channel_credentials,
             insecure,
