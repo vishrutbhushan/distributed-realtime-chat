@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package llm;
 
-
-
 // ─────────────────────────────────────────────────────────────
 // Generic LLM call
 // ─────────────────────────────────────────────────────────────
@@ -12,7 +10,7 @@ message LLMRequest {
   string request_id = 1;
   string query      = 2;
   string context    = 3;
-  string feature    = 4;   // SMART_REPLY | SUMMARIZE | SUGGEST
+  string feature    = 4; // SMART_REPLY | SUMMARIZE | SUGGEST
 }
 
 message LLMResponse {
@@ -23,31 +21,31 @@ message LLMResponse {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Feature 1: Smart Replies
+// Feature 1: Smart Replies (over full chat history)
 // ─────────────────────────────────────────────────────────────
 
 message SmartReplyRequest {
-  string          request_id       = 1;
-  repeated string recent_messages  = 2;   // last N messages as "user: text"
-  string          current_message  = 3;   // the message to reply to
-  string          channel_name     = 4;
+  string          request_id      = 1;
+  repeated string chat_history    = 2; // entire conversation history as "username: message"
+  string          current_message = 3;
+  string          context_title   = 4;
 }
 
 message SmartReplyResponse {
-  string          request_id   = 1;
-  repeated string suggestions  = 2;
-  bool            success      = 3;
-  string          error        = 4;
+  string          request_id  = 1;
+  repeated string suggestions = 2; // 3 concise suggestions
+  bool            success     = 3;
+  string          error       = 4;
 }
 
 // ─────────────────────────────────────────────────────────────
-// Feature 2: Conversation Summarization
+// Feature 2: Conversation Summarization (over full chat history)
 // ─────────────────────────────────────────────────────────────
 
 message SummarizeRequest {
   string          request_id   = 1;
-  repeated string messages     = 2;   // "user: text" lines
-  string          channel_name = 3;
+  repeated string chat_history = 2; // entire conversation history as "username: message"
+  string          context_title= 3;
 }
 
 message SummarizeResponse {
@@ -58,14 +56,14 @@ message SummarizeResponse {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Feature 3: Context-Aware Suggestions
+// Feature 3: Context Suggestion
 // ─────────────────────────────────────────────────────────────
 
 message ContextSuggestionRequest {
-  string          request_id      = 1;
-  repeated string recent_messages = 2;
-  string          channel_name    = 3;
-  string          current_user    = 4;
+  string          request_id   = 1;
+  repeated string chat_history = 2;
+  string          context_title= 3;
+  string          current_user = 4;
 }
 
 message ContextSuggestionResponse {
@@ -76,12 +74,12 @@ message ContextSuggestionResponse {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Service
+// Service Definition
 // ─────────────────────────────────────────────────────────────
 
 service LLMService {
-  rpc GetLLMAnswer(LLMRequest)                         returns (LLMResponse);
-  rpc GetSmartReplies(SmartReplyRequest)               returns (SmartReplyResponse);
-  rpc SummarizeConversation(SummarizeRequest)          returns (SummarizeResponse);
-  rpc GetContextSuggestion(ContextSuggestionRequest)   returns (ContextSuggestionResponse);
+  rpc GetLLMAnswer(LLMRequest)                       returns (LLMResponse);
+  rpc GetSmartReplies(SmartReplyRequest)             returns (SmartReplyResponse);
+  rpc SummarizeConversation(SummarizeRequest)        returns (SummarizeResponse);
+  rpc GetContextSuggestion(ContextSuggestionRequest) returns (ContextSuggestionResponse);
 }

@@ -6,12 +6,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy all source code
+# Copy all source code & assets
 COPY proto/     ./proto/
 COPY app/       ./app/
 COPY storage/   ./storage/
 COPY raft/      ./raft/
 COPY client/    ./client/
+COPY web/       ./web/
 
 # Compile protobuf definitions → generated/
 RUN mkdir -p generated && \
@@ -28,6 +29,7 @@ RUN mkdir -p /data/files
 
 ENV PYTHONPATH=/app:/app/generated
 
+EXPOSE 50051 8000
+
 # Default: run the app server
 CMD ["python", "app/server.py"]
-

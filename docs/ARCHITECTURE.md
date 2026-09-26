@@ -1,309 +1,188 @@
-# Architecture — Distributed Real-time Chat
+# Architecture — Distributed Real-time Chat and Collaboration Tool
 
-## 1. Overview
+## 1. System Overview
 
-The system is a **distributed monolith**: every application node runs the same
-codebase and exposes the same gRPC API. Nodes reach consensus through **Raft**,
-replicate state through the **Raft log**, and communicate with clients directly
-— clients do not need to know who the leader is.
+The system is designed as a **cluster of monolithic application nodes** coordinated via **gRPC** and a **standalone CPU-optimized LLM server**.
 
-```
-                    ┌──────────────────────────┐
-                    │       LLM SERVER         │
-                    │  llm/server.py           │
-                    │  port 50060              │
-                    │                          │
-                    │  • GetSmartReplies       │
-                    │  • SummarizeConversation │
-                    │  • GetContextSuggestion  │
-                    └──────────┬───────────────┘
-                               │ gRPC (llm.proto)
-                               │
-         ┌─────────────────────┼──────────────────────┐
-         │                     │                      │
-   ┌─────▼──────┐       ┌──────▼─────┐        ┌──────▼──────┐
-   │  Node 1    │◄─────►│  Node 2    │◄───────►│  Node 3     │
-   │  LEADER    │       │  FOLLOWER  │        │  FOLLOWER   │
-   │            │       │            │        │             │
-   │ Auth       │       │ Auth       │        │ Auth        │
-   │ Chat       │       │ Chat       │        │ Chat        │
-   │ Presence   │       │ Presence   │        │ Presence    │
-   │ Files      │       │ Files      │        │ Files       │
-   │ RaftNode   │       │ RaftNode   │        │ RaftNode    │
-   │ SQLite DB  │       │ SQLite DB  │        │ SQLite DB   │
-   │ :50051     │       │ :50052     │        │ :50053      │
-   └─────▲──────┘       └──────▲─────┘        └──────▲──────┘
-         │                     │                      │
-         └──────────┬──────────┴──────────────┬───────┘
-                    │                         │
-              gRPC (chat.proto)         gRPC (chat.proto)
-                    │                         │
-             ┌──────▼──────┐           ┌──────▼──────┐
-             │  Clients    │           │  Clients    │
-             │  A / B / C  │           │  D / E / F  │
-             └─────────────┘           └─────────────┘
-```
-
-**Milestone 1**: single node in `STANDALONE` state (no Raft).  
-**Milestone 2**: 5-node cluster with full Raft (leader election + log replication).
-
----
-
-## 2. Component Map
-
-### 2.1 Application Node
-
-```
-app/server.py  (ChatServicer)
-│
-├── app/auth/manager.py      AuthManager
-│     SHA-256 passwords · UUID tokens · 24h TTL
-│
-├── app/chat/manager.py      ChatManager
-│     Channels · Messages · Idempotency · Streaming subscriptions
-│
-├── app/presence/manager.py  PresenceManager
-│     Heartbeat-driven · 60 s offline threshold · background sweep thread
-│
-├── app/files/manager.py     FileManager
-│     Filesystem blob store · SQLite metadata
-│
-├── raft/node.py             RaftNode
-│     M1: STANDALONE (no-op) · M2: full Raft leader election + replication
-│
-└── storage/database.py      Database
-      Thread-local SQLite · WAL mode · full schema
-```
-
-### 2.2 LLM Server
-
-```
-llm/server.py  (LLMServicer)
-│
-├── llm/inference.py
-│     USE_MOCK=True  →  rule-based mock responses
-│     USE_MOCK=False →  llama.cpp | HuggingFace | Ollama (uncomment one)
-│
-└── llm/prompts.py
-      Prompt templates for smart reply · summarize · context suggestion
-```
-
-### 2.3 Client
-
-```
-client/client.py
-  --demo flag    →  automated 18-step walkthrough
-  interactive    →  REPL: send / history / smartreply / summarize / ...
+```text
+                                 ┌──────────────────────────┐
+                                 │       LLM SERVER         │
+                                 │  (Standalone Instance)   │
+                                 │  llm/server.py           │
+                                 │  port 50060              │
+                                 │                          │
+                                 │  • GetSmartReplies       │
+                                 │  • SummarizeConversation │
+                                 │  • GetContextSuggestion  │
+                                 └──────────┬───────────────┘
+                                            │ gRPC (llm.proto)
+                                            │
+         ┌──────────────────────────────────┼──────────────────────────────────┐
+         │                                  │                                  │
+   ┌─────▼──────┐                    ┌──────▼─────┐                     ┌──────▼──────┐
+   │  Node 1    │◄══════════════════►│  Node 2    │◄═══════════════════►│  Node 3     │
+   │  STANDALONE│   Raft Consensus   │  FOLLOWER  │    Raft Consensus   │  FOLLOWER   │
+   │  (M1 Mode) │    (Milestone 2)   │(Milestone 2│     (Milestone 2)   │(Milestone 2)│
+   │            │                    │            │                     │             │
+   │ Web Gateway│                    │ Web Gateway│                     │ Web Gateway │
+   │ (:8000)    │                    │            │                     │             │
+   │ Auth       │                    │ Auth       │                     │ Auth        │
+   │ Chat (DMs) │                    │ Chat (DMs) │                     │ Chat (DMs)  │
+   │ Groups     │                    │ Groups     │                     │ Groups      │
+   │ Presence   │                    │ Presence   │                     │ Presence    │
+   │ Files Store│                    │ Files Store│                     │ Files Store │
+   │ Raft Node  │                    │ Raft Node  │                     │ Raft Node   │
+   │ SQLite DB  │                    │ SQLite DB  │                     │ SQLite DB   │
+   │ gRPC :50051│                    │ gRPC :50052│                     │ gRPC :50053 │
+   └─────▲──────┘                    └──────▲─────┘                     └──────▲──────┘
+         │                                  │                                  │
+         └─────────────────┬────────────────┴──────────────────┬───────────────┘
+                           │                                   │
+              HTTP / REST  │  gRPC (chat.proto)   HTTP / REST  │  gRPC (chat.proto)
+                           │                                   │
+                    ┌──────▼──────┐                     ┌──────▼──────┐
+                    │  Web Users  │                     │ CLI Clients │
+                    │ (Browser UI)│                     │  (Client)   │
+                    └─────────────┘                     └─────────────┘
 ```
 
 ---
 
-## 3. gRPC Service Definitions
+## 2. Design Principles
 
-### 3.1 `ChatService` (chat.proto) — client ↔ app node
+### 2.1 Replicated Monoliths
+Instead of decomposing chat, auth, and presence into fragmented microservices, each application node is a **monolith**:
+- Contains the full application stack (Auth, Chat, Groups, Presence, Files, SQLite, Raft).
+- Maintains its own local SQLite storage.
+- Operates independently and communicates with other nodes strictly via gRPC.
+- In Milestone 1, each node operates in `STANDALONE` mode.
+- In Milestone 2, state changes (messages, groups, user changes) will be replicated across nodes using Raft consensus before being committed to SQLite.
 
-| RPC | Type | Description |
-|-----|------|-------------|
-| `Login` / `Logout` | unary | Auth with UUID tokens |
-| `CreateChannel` / `DeleteChannel` | unary | Admin only |
-| `JoinChannel` / `LeaveChannel` / `ListChannels` | unary | Any authenticated user |
-| `SendMessage` | unary | Idempotent via `client_request_id` |
-| `GetMessages` | unary | Paginated history |
-| `StreamMessages` | server-streaming | Real-time push |
-| `GetPresence` / `UpdatePresence` | unary | ONLINE/OFFLINE status |
-| `UploadFile` / `DownloadFile` / `ListFiles` | unary | File sharing |
-| `AddUser` / `RemoveUser` | unary | Admin only |
-| `GetNodeStatus` | unary | node_id, state, term, leader_id, commit_index |
-| `GetSmartReplies` | unary | LLM proxy → 3 reply suggestions |
-| `SummarizeChannel` | unary | LLM proxy → conversation summary |
-| `GetContextSuggestion` | unary | LLM proxy → next-action recommendation |
+### 2.2 Dedicated AI / LLM Instance
+The LLM inference engine runs on a completely separate server (`llm-server` on port 50060).
+- Application nodes never execute heavy inference locally; they invoke `LLMService` via gRPC.
+- The entire chat history is passed in the RPC payload, giving the model full conversational context.
 
-### 3.2 `RaftService` (raft.proto) — node ↔ node
-
-| RPC | Description |
-|-----|-------------|
-| `RequestVote` | Candidate asks peers for votes during election |
-| `AppendEntries` | Leader replicates entries + sends periodic heartbeats |
-
-### 3.3 `LLMService` (llm.proto) — app node → LLM server
-
-| RPC | Description |
-|-----|-------------|
-| `GetLLMAnswer` | Generic feature dispatch |
-| `GetSmartReplies` | Return 3 reply suggestions |
-| `SummarizeConversation` | Bullet-point summary of message list |
-| `GetContextSuggestion` | One-sentence next-action recommendation |
+### 2.3 Dual Interfaces: Browser Web UI & gRPC
+- All inter-service communication and core APIs strictly adhere to **gRPC**.
+- To satisfy the browser requirement ("all users will hit the same URL and get a UI"), Node 1 embeds an HTTP Web Gateway on port 8000 that translates browser REST/JSON calls directly to gRPC stubs.
 
 ---
 
-## 4. Data Model (SQLite)
+## 3. Database Schema (`storage/database.py`)
 
-Each node maintains its own independent SQLite database at `$DB_PATH`.
-In M2 all write operations flow through the Raft log so every node's
-state machine applies the same sequence of commands.
+Each application node manages an isolated SQLite database using WAL mode and `PRAGMA busy_timeout=30000` under process-wide read/write locks:
 
 ```sql
--- Application tables
-users          (user_id TEXT PK, username TEXT UNIQUE, password_hash, role, created_at)
-sessions       (token TEXT PK, user_id, created_at, expires_at)
-channels       (channel_id TEXT PK, name TEXT UNIQUE, created_by, created_at)
-channel_members(channel_id, user_id, joined_at)          -- PK (channel_id, user_id)
-messages       (message_id TEXT PK, channel_id, sender_id, content, timestamp,
-                client_request_id TEXT UNIQUE,            -- idempotency guard
-                raft_log_index INTEGER DEFAULT 0,
-                file_id TEXT)
-files          (file_id TEXT PK, filename, owner_id, channel_id,
-                storage_location, size_bytes, content_type, uploaded_at)
-presence       (user_id TEXT PK, status TEXT, last_seen INTEGER)
+-- Registered users (clean start: 0 default users)
+CREATE TABLE users (
+    user_id       TEXT PRIMARY KEY,
+    username      TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'inactive',  -- 'active' | 'inactive'
+    last_seen     INTEGER NOT NULL DEFAULT 0,
+    created_at    INTEGER NOT NULL
+);
 
--- Raft tables (Milestone 2 — already created, not yet used)
-raft_log       (log_index INTEGER PK, term, command_type, payload TEXT, request_id)
-raft_state     (key TEXT PK, value TEXT)    -- currentTerm, votedFor
-```
+-- Active session tokens (UUID tokens with 7-day TTL)
+CREATE TABLE sessions (
+    token      TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
 
-**Key index**: `messages(channel_id, timestamp)` for efficient history queries.
+-- Collaboration groups (clean start: 0 default groups)
+CREATE TABLE groups (
+    group_id   TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (created_by) REFERENCES users(user_id)
+);
 
----
+-- Group memberships with role controls
+CREATE TABLE group_members (
+    group_id  TEXT NOT NULL,
+    user_id   TEXT NOT NULL,
+    role      TEXT NOT NULL DEFAULT 'MEMBER',  -- 'ADMIN' | 'MEMBER'
+    joined_at INTEGER NOT NULL,
+    PRIMARY KEY (group_id, user_id),
+    FOREIGN KEY (group_id) REFERENCES groups(group_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id)  REFERENCES users(user_id)   ON DELETE CASCADE
+);
 
-## 5. Write Path — Milestone 1 (Direct)
+-- Replicated message ledger (Direct Messages & Group Messages)
+CREATE TABLE messages (
+    message_id        TEXT PRIMARY KEY,
+    chat_type         TEXT NOT NULL,               -- 'DM' | 'GROUP'
+    sender_id         TEXT NOT NULL,
+    recipient_id      TEXT DEFAULT NULL,          -- user_id for DM
+    group_id          TEXT DEFAULT NULL,          -- group_id for GROUP
+    content           TEXT NOT NULL,
+    file_id           TEXT DEFAULT NULL,
+    timestamp         INTEGER NOT NULL,           -- ms epoch
+    client_request_id TEXT UNIQUE,                -- Idempotency key
+    raft_log_index    INTEGER DEFAULT 0,          -- Milestone 2 replication index
+    FOREIGN KEY (sender_id)    REFERENCES users(user_id),
+    FOREIGN KEY (recipient_id) REFERENCES users(user_id),
+    FOREIGN KEY (group_id)     REFERENCES groups(group_id) ON DELETE CASCADE
+);
 
-```
-Client
-  │
-  │  SendMessage(token, channel_id, content, client_request_id)
-  ▼
-ChatServicer.SendMessage
-  │
-  ├─ validate_token(token)          → {user_id, username, role}
-  │
-  ├─ presence.update_presence()     → mark ONLINE (heartbeat)
-  │
-  └─ chat.send_message()
-        │
-        ├─ idempotency check        → if client_request_id exists, return existing
-        │
-        ├─ INSERT INTO messages     → ms-epoch timestamp, raft_log_index=0
-        │
-        └─ _notify_subscribers()    → push to StreamMessages queues
-```
+-- File metadata (binary stored in /data/files/<file_id>)
+CREATE TABLE files (
+    file_id          TEXT PRIMARY KEY,
+    filename         TEXT NOT NULL,
+    file_type        TEXT NOT NULL,               -- 'image' | 'pdf' | 'other'
+    content_type     TEXT NOT NULL DEFAULT 'application/octet-stream',
+    size_bytes       INTEGER NOT NULL,
+    owner_id         TEXT NOT NULL,
+    chat_type        TEXT NOT NULL,               -- 'DM' | 'GROUP'
+    target_id        TEXT NOT NULL,               -- recipient_id or group_id
+    storage_location TEXT NOT NULL,
+    uploaded_at      INTEGER NOT NULL,
+    FOREIGN KEY (owner_id) REFERENCES users(user_id)
+);
 
-## 6. Write Path — Milestone 2 (Raft)
+-- Raft state & log (Milestone 2 readiness)
+CREATE TABLE raft_state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 
-```
-Client
-  │
-  ▼
-Any node (follower or leader)
-  │
-  ├─ if FOLLOWER: forward to leader  ─────────────────┐
-  │                                                   │
-  └─ if LEADER:                      ◄────────────────┘
-        │
-        ├─ propose(LogEntry)
-        │     │
-        │     ├─ AppendEntries → followers (parallel RPCs)
-        │     │
-        │     └─ wait for majority ack
-        │
-        ├─ advance commitIndex
-        │
-        ├─ StateMachine.apply(entry)
-        │     │
-        │     └─ chat.send_message()  → stored + broadcast
-        │
-        └─ return result to client
-```
-
----
-
-## 7. Idempotency
-
-Every `SendMessage` call carries a `client_request_id` (UUID from the client).  
-The `messages` table has a `UNIQUE` index on this column.  
-On retry the existing row is returned — no duplicate is inserted.
-
-This is essential for distributed reliability: network timeouts cause clients to
-retry; the system guarantees exactly-once visible delivery.
-
----
-
-## 8. Presence Model
-
-```
-Login           → INSERT OR REPLACE presence(user_id, 'ONLINE', now)
-Any RPC (auth)  → UPDATE presence SET last_seen = now (via presence.update_presence)
-Logout          → UPDATE presence SET status = 'OFFLINE'
-
-Background sweep thread (every 30 s):
-    UPDATE presence SET status = 'OFFLINE'
-    WHERE status = 'ONLINE' AND last_seen < now - 60
+CREATE TABLE raft_log (
+    log_index    INTEGER PRIMARY KEY,
+    term         INTEGER NOT NULL,
+    command_type TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    request_id   TEXT
+);
 ```
 
 ---
 
-## 9. Raft State (Milestone 2)
+## 4. Message & Data Flow
 
-Each `RaftNode` tracks:
+### 4.1 Direct Messaging (1-to-1)
+1. **Client** calls `SendDirectMessage(token, recipient_user_id, content, client_request_id, file_id)`.
+2. **Server** validates `token` via `AuthManager.validate_token()`.
+3. Server checks `client_request_id` in `messages` table for idempotency.
+4. If fresh, inserts row into `messages` with `chat_type='DM'`.
+5. Server pushes new message into real-time streaming queues for both sender and recipient.
 
-| Field | Persisted | Description |
-|-------|-----------|-------------|
-| `currentTerm` | ✅ SQLite `raft_state` | Monotonically increasing election term |
-| `votedFor` | ✅ SQLite `raft_state` | Candidate voted for in current term |
-| `log[]` | ✅ SQLite `raft_log` | Sequence of `LogEntry` (index, term, command, payload) |
-| `commitIndex` | Memory | Highest log index known to be committed |
-| `lastApplied` | Memory | Highest log index applied to state machine |
-| `state` | Memory | `FOLLOWER` \| `CANDIDATE` \| `LEADER` |
-| `leader_id` | Memory | Current known leader (for client forwarding) |
+### 4.2 Group Messaging & Admin Controls
+1. Any user can call `CreateGroup(token, name, initial_member_user_ids)`.
+   - Creator is assigned `role='ADMIN'`.
+   - Selected initial members are added as `role='MEMBER'`.
+   - All members immediately query the group in `ListGroups`.
+2. Calling `UpdateGroup(token, group_id, action, target_user_id, new_name)` verifies that the requesting user has `role='ADMIN'`.
+   - Non-admins receive `PERMISSION_DENIED`.
+   - Admins can `RENAME`, `ADD_MEMBER`, `REMOVE_MEMBER`, and `MAKE_ADMIN`.
 
-### Log commands
-
-```
-SEND_MESSAGE    { channel_id, sender_id, content, client_request_id }
-CREATE_CHANNEL  { name, created_by }
-JOIN_CHANNEL    { channel_id, user_id }
-LEAVE_CHANNEL   { channel_id, user_id }
-DELETE_CHANNEL  { channel_id }
-UPLOAD_FILE     { file_id, filename, owner_id, channel_id, storage_location, ... }
-```
-
----
-
-## 10. Docker Compose Layout
-
-```
-┌─────────────────────────── chat-net (bridge) ─────────────────────────────┐
-│                                                                            │
-│  llm-server    :50060   healthcheck → GetLLMAnswer                        │
-│                                                                            │
-│  app-node-1    :50051   depends_on llm-server (healthy)                   │
-│                         healthcheck → GetNodeStatus                        │
-│                         volume: node1-data → /data                        │
-│                                                                            │
-│  client-runner          depends_on app-node-1 (healthy)                   │
-│                         runs --demo then exits 0                           │
-│                                                                            │
-│  # M2 additions (uncomment in docker-compose.yml):                        │
-│  app-node-2..5 :50052-55  PEERS wired between all nodes                   │
-│                                                                            │
-└────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 11. Proto Compilation
-
-Protos are compiled **inside Docker** at build time using:
-
-```dockerfile
-RUN python -m grpc_tools.protoc \
-    -I ./proto \
-    --python_out=./generated \
-    --grpc_python_out=./generated \
-    ./proto/chat.proto ./proto/raft.proto ./proto/llm.proto
-```
-
-Generated stubs land in `/app/generated/` and are imported via
-`PYTHONPATH=/app:/app/generated`.
-
-For local development, run [`scripts/generate_proto.ps1`](../scripts/generate_proto.ps1)
-(Windows) or [`scripts/generate_proto.sh`](../scripts/generate_proto.sh) (Linux/Mac).
+### 4.3 LLM Assistance (Smart Replies & Summarization)
+1. Client requests smart replies or summary via `GetSmartReplies` / `SummarizeChat`.
+2. App node reads all historical messages for the active conversation.
+3. App node constructs formatted list of messages (`"username: message"`).
+4. App node proxies the call to `LLMService` on port `50060` via gRPC.
+5. `LLMService` processes the entire history and returns 3 concise smart replies or a bulleted summary.

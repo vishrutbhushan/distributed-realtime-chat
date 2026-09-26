@@ -1,14 +1,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Milestone 1: single app node + LLM server + client runner
-#
-# For Milestone 2 (Raft), duplicate app-node-1 into app-node-2..5 and set
-# PEERS appropriately.
+# Distributed Real-time Chat and Collaboration Tool — Docker Compose
+# Milestone 1: App Node + CPU-optimized LLM Server + Automated Client Runner
+# Web UI Gateway available at http://localhost:8000
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── LLM server ─────────────────────────────────────────────────────────────
+  # ── LLM Server (Standalone Instance, port 50060) ───────────────────────────
   llm-server:
     build:
       context: .
@@ -33,7 +31,7 @@ services:
       retries: 5
       start_period: 10s
 
-  # ── App node 1 (Milestone 1: STANDALONE) ───────────────────────────────────
+  # ── App Node 1 (Monolith: gRPC :50051 + Web Gateway :8000) ─────────────────
   app-node-1:
     build:
       context: .
@@ -41,9 +39,11 @@ services:
     container_name: app-node-1
     ports:
       - "50051:50051"
+      - "8000:8000"
     environment:
       NODE_ID:           "node-1"
       PORT:              "50051"
+      WEB_PORT:          "8000"
       DB_PATH:           "/data/chat.db"
       FILE_STORAGE_PATH: "/data/files/"
       LLM_SERVER:        "llm-server:50060"
@@ -68,7 +68,7 @@ services:
       retries: 10
       start_period: 15s
 
-  # ── Client runner (automated demo) ─────────────────────────────────────────
+  # ── Client Runner (Automated Milestone 1 Verification Suite) ───────────────
   client-runner:
     build:
       context: .
@@ -85,32 +85,25 @@ services:
     restart: "no"   # run once then exit
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Milestone 2 additions (copy-paste and uncomment):
+# Milestone 2 additions (copy-paste and uncomment for Raft cluster):
 #
 #  app-node-2:
 #    build: {context: ., dockerfile: docker/Dockerfile.app}
 #    environment:
 #      NODE_ID: "node-2"
 #      PORT:    "50052"
+#      WEB_PORT: "8002"
 #      DB_PATH: "/data/chat.db"
 #      FILE_STORAGE_PATH: "/data/files/"
 #      LLM_SERVER: "llm-server:50060"
 #      PEERS: "app-node-1:50051,app-node-3:50053,app-node-4:50054,app-node-5:50055"
 #    volumes: [node2-data:/data]
-#    ports:   ["50052:50052"]
-#    depends_on: [llm-server]
-#    networks:   [chat-net]
-#
-#  (repeat for node-3, node-4, node-5)
+#    ports:   ["50052:50052", "8002:8002"]
 # ─────────────────────────────────────────────────────────────────────────────
-
-volumes:
-  node1-data:
-  # node2-data:   # Milestone 2
-  # node3-data:
-  # node4-data:
-  # node5-data:
 
 networks:
   chat-net:
     driver: bridge
+
+volumes:
+  node1-data:

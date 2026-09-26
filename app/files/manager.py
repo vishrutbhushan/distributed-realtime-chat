@@ -1,14 +1,18 @@
 """
-File manager.
-Files are written to local filesystem; metadata is stored in SQLite.
-In Milestone 2, file metadata will be replicated through the Raft log.
+File manager: handles PDF and Image upload/download.
+
+Requirements:
+- Send / receive PDF files and image files in DMs and groups.
+- Persist files on disk and metadata in SQLite.
+- File size safeguard (e.g. 50 MB).
+- Content-type and file-type detection (image, pdf, other).
 """
 
 import logging
 import os
 import time
 import uuid
-from typing import List, Tuple
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -17,26 +21,41 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB safeguard
 
 class FileManager:
     def __init__(self, db, storage_path: str):
-        self.db           = db
+        self.db = db
         self.storage_path = storage_path
         os.makedirs(storage_path, exist_ok=True)
 
     def upload_file(
         self,
-        channel_id: str,
         owner_id: str,
+        chat_type: str,
+        target_id: str,
         filename: str,
         data: bytes,
         content_type: str = "application/octet-stream",
-        request_id: str = None,
+        request_id: Optional[str] = None,
     ) -> Tuple[bool, dict, str]:
-        """Persist file and metadata. Returns (success, metadata_dict, message)."""
+        """
+        Persist binary file to filesystem and record metadata in SQLite.
+        Detects whether file is 'image' or 'pdf'.
+        """
         if len(data) > MAX_FILE_SIZE:
             return False, {}, f"File too large (max {MAX_FILE_SIZE // 1024 // 1024} MB)"
 
-        file_id          = str(uuid.uuid4())
+        filename = os.path.basename(filename or "file")
+        lower_name = filename.lower()
+
+        # Classify file_type
+        if content_type.startswith("image/") or lower_name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
+            file_type = "image"
+        elif content_type == "application/pdf" or lower_name.endswith(".pdf"):
+            file_type = "pdf"
+        else:
+            file_type = "other"
+
+        file_id = str(uuid.uuid4())
         storage_location = os.path.join(self.storage_path, file_id)
-        now              = int(time.time())
+        now = int(time.time())
 
         try:
             with open(storage_location, "wb") as fh:
@@ -45,52 +64,54 @@ class FileManager:
             self.db.execute(
                 """
                 INSERT INTO files
-                    (file_id, filename, owner_id, channel_id,
-                     storage_location, size_bytes, content_type, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (file_id, filename, file_type, content_type, size_bytes,
+                     owner_id, chat_type, target_id, storage_location, uploaded_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (file_id, filename, owner_id, channel_id,
-                 storage_location, len(data), content_type, now),
+                (file_id, filename, file_type, content_type, len(data),
+                 owner_id, chat_type, target_id, storage_location, now),
             )
             self.db.commit()
 
             meta = {
-                "file_id":          file_id,
-                "filename":         filename,
-                "owner_id":         owner_id,
-                "channel_id":       channel_id,
+                "file_id": file_id,
+                "filename": filename,
+                "file_type": file_type,
+                "content_type": content_type,
+                "size_bytes": len(data),
+                "owner_id": owner_id,
+                "chat_type": chat_type,
+                "target_id": target_id,
                 "storage_location": storage_location,
-                "size_bytes":       len(data),
-                "content_type":     content_type,
-                "uploaded_at":      now,
+                "uploaded_at": now,
             }
-            logger.info("[FILES] Uploaded %s (%d bytes)", filename, len(data))
-            return True, meta, "File uploaded"
+            logger.info("[FILES] Uploaded file=%s type=%s size=%d", filename, file_type, len(data))
+            return True, meta, "File uploaded successfully"
         except Exception as exc:
-            # Clean up orphaned file
+            self.db.rollback()
             if os.path.exists(storage_location):
-                os.remove(storage_location)
+                try:
+                    os.remove(storage_location)
+                except OSError:
+                    pass
             logger.error("[FILES] upload error: %s", exc)
             return False, {}, str(exc)
 
     def download_file(self, file_id: str) -> Tuple[bool, bytes, dict, str]:
-        """Returns (success, data, metadata, message)."""
+        """Fetch binary content and metadata for a file."""
         row = self.db.fetchone("SELECT * FROM files WHERE file_id = ?", (file_id,))
         if not row:
             return False, b"", {}, "File not found"
+
         meta = dict(row)
+        loc = meta["storage_location"]
+        if not os.path.exists(loc):
+            return False, b"", meta, "File missing from disk storage"
+
         try:
-            with open(meta["storage_location"], "rb") as fh:
+            with open(loc, "rb") as fh:
                 data = fh.read()
             return True, data, meta, "OK"
         except Exception as exc:
             logger.error("[FILES] download error: %s", exc)
             return False, b"", meta, str(exc)
-
-    def list_files(self, channel_id: str) -> List[dict]:
-        rows = self.db.fetchall(
-            "SELECT * FROM files WHERE channel_id = ? ORDER BY uploaded_at",
-            (channel_id,),
-        )
-        return [dict(r) for r in rows]
-
