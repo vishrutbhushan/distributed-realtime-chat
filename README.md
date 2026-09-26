@@ -16,8 +16,8 @@ A distributed real-time chat and collaboration platform designed to demonstrate:
 
 > **Important**: Docker is the sole supported and verified runtime environment.
 
-### Run the One-Click Automated Demo & Verification
-The startup script performs a clean-slate teardown (`docker compose down -v`), rebuilds images executing static unit tests at build time, starts services, and runs the 14-point verification suite:
+### Run the One-Click Startup Script (Live Web UI)
+The startup script performs a clean-slate teardown (`docker compose down -v`), rebuilds images executing static self-tests at build time, starts the application and local LLM services, and keeps the cluster live for interactive browser usage:
 
 **Windows (Command Prompt / PowerShell / File Explorer)**:
 ```cmd
@@ -30,22 +30,16 @@ The startup script performs a clean-slate teardown (`docker compose down -v`), r
 bash scripts/start-demo.sh
 ```
 
-### Manual Docker Compose Workflow
+Once running:
+- Open **[http://localhost:8000](http://localhost:8000)** in your browser to sign up and chat.
+- Live logs stream in the console.
+- Press **`Ctrl+C`** to gracefully shut down the cluster and clean up volumes.
+
+### Optional: Manual Verification Test
+If you want to run the automated 14-point test suite explicitly:
 ```bash
-# 1. Clean previous state
-docker compose down -v --remove-orphans
-
-# 2. Build images (runs unit test suite inside Docker)
-docker compose build
-
-# 3. Run the automated 14-point verification test
-docker compose up --abort-on-container-exit
-
-# Or run the cluster in the background to use the Web UI
-docker compose up -d llm-server app-node-1
+docker compose --profile test run --rm client-runner
 ```
-
-Open **[http://localhost:8000](http://localhost:8000)** in your browser.
 
 ---
 

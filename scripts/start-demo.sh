@@ -18,6 +18,12 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+cleanup() {
+  printf '\nShutting down services and cleaning up volumes...\n'
+  docker compose down -v --remove-orphans || true
+}
+trap cleanup EXIT INT TERM
+
 printf 'Cleaning up previous containers and volumes (clean slate)...\n'
 docker compose down -v --remove-orphans || {
   printf 'Failed to clean up existing Docker Compose containers and volumes.\n' >&2
@@ -81,19 +87,19 @@ while true; do
     docker compose logs --no-color --tail=100 llm-server app-node-1 >&2 || true
     exit 1
   fi
-  sleep 5
+  sleep 3
 done
 
-printf 'Both services are healthy.\n'
-printf 'Web UI available at: http://localhost:8000\n'
-printf 'Starting the self-checking demo suite...\n'
-docker compose up --no-build --abort-on-container-exit --exit-code-from client-runner
-exit_code=$?
+printf '\n'
+printf '=================================================================\n'
+printf ' DISTRIBUTED REAL-TIME CHAT & COLLABORATION PLATFORM\n'
+printf '=================================================================\n'
+printf ' Web UI available at: http://localhost:8000\n'
+printf ' gRPC Server port:    localhost:50051\n'
+printf ' LLM Server port:     localhost:50060\n\n'
+printf ' Cluster is live and running. Open http://localhost:8000 in browser.\n'
+printf ' Press Ctrl+C to shut down.\n'
+printf '=================================================================\n\n'
 
-if [ "$exit_code" -eq 0 ]; then
-  printf 'Demo succeeded (exit code 0).\n'
-else
-  printf 'Demo failed (exit code %s). Review the service output above.\n' "$exit_code" >&2
-fi
-
-exit "$exit_code"
+# Stream service logs live until user presses Ctrl+C
+docker compose logs -f --tail=20 app-node-1 llm-server

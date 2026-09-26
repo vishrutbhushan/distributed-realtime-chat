@@ -65,6 +65,7 @@ services:
 
   # ── Client Runner (Automated Milestone 1 Verification Suite) ───────────────
   client-runner:
+    profiles: ["test"]
     build:
       context: .
       dockerfile: docker/Dockerfile.app

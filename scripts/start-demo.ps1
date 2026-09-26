@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $ProjectRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $HasLocation = $false
-$ExitCode = 1
+$ExitCode = 0
 
 try {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
@@ -81,26 +81,33 @@ try {
             & docker compose logs --no-color --tail=100 llm-server app-node-1
             throw 'The services did not become healthy within 10 minutes.'
         }
-        Start-Sleep -Seconds 5
+        Start-Sleep -Seconds 3
     }
 
-    Write-Host 'Both services are healthy.' -ForegroundColor Green
-    Write-Host 'Web UI available at: http://localhost:8000' -ForegroundColor Cyan
-    Write-Host 'Starting the self-checking demo suite...' -ForegroundColor Cyan
-    & docker compose up --no-build --abort-on-container-exit --exit-code-from client-runner
-    $ExitCode = $LASTEXITCODE
-    if ($ExitCode -eq 0) {
-        Write-Host 'Demo succeeded (exit code 0).' -ForegroundColor Green
-    }
-    else {
-        Write-Host "Demo failed (exit code $ExitCode). Review the service output above." -ForegroundColor Red
-    }
+    Write-Host ''
+    Write-Host '=================================================================' -ForegroundColor Cyan
+    Write-Host ' DISTRIBUTED REAL-TIME CHAT & COLLABORATION PLATFORM' -ForegroundColor Cyan
+    Write-Host '=================================================================' -ForegroundColor Cyan
+    Write-Host ' Web UI available at: http://localhost:8000' -ForegroundColor Green
+    Write-Host ' gRPC Server port:    localhost:50051' -ForegroundColor White
+    Write-Host ' LLM Server port:     localhost:50060' -ForegroundColor White
+    Write-Host ''
+    Write-Host ' Cluster is live and running. Open http://localhost:8000 in browser.' -ForegroundColor Yellow
+    Write-Host ' Press Ctrl+C to shut down.' -ForegroundColor DarkGray
+    Write-Host '=================================================================' -ForegroundColor Cyan
+    Write-Host ''
+
+    # Stream service logs live until user presses Ctrl+C
+    & docker compose logs -f --tail=20 app-node-1 llm-server
 }
 catch {
     Write-Host "Startup failed: $($_.Exception.Message)" -ForegroundColor Red
     $ExitCode = 1
 }
 finally {
+    Write-Host ''
+    Write-Host 'Shutting down services and cleaning up volumes...' -ForegroundColor Cyan
+    & docker compose down -v --remove-orphans
     if ($HasLocation) {
         Pop-Location
     }
