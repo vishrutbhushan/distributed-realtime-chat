@@ -1,5 +1,5 @@
 param(
-    [switch]$Rebuild
+    [switch]$NoRebuild
 )
 
 $ErrorActionPreference = 'Continue'
@@ -25,46 +25,19 @@ try {
         throw 'The Docker engine is not ready. Start Docker Desktop (or the Docker service), wait for it to finish starting, then retry.'
     }
 
-    Write-Host 'Checking the Compose images...'
-    $ImageOutput = & docker compose config --images
+    Write-Host 'Cleaning up previous containers and volumes (clean slate)...' -ForegroundColor Cyan
+    & docker compose down -v --remove-orphans
     if ($LASTEXITCODE -ne 0) {
-        throw 'Could not read the Docker Compose configuration.'
-    }
-    $Images = @($ImageOutput | ForEach-Object { "$_".Trim() } | Where-Object { $_ } | Select-Object -Unique)
-    if ($Images.Count -eq 0) {
-        throw 'Docker Compose did not report any service images to prepare.'
+        throw 'Could not tear down existing Docker Compose containers and volumes.'
     }
 
-    $NeedsBuild = $Rebuild.IsPresent
-    if (-not $NeedsBuild) {
-        foreach ($Image in $Images) {
-            $null = & docker image inspect $Image 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                $NeedsBuild = $true
-                break
-            }
-        }
+    Write-Host 'Building project images (static tests run during build)...' -ForegroundColor Cyan
+    & docker compose build
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Docker Compose could not build the project images or static tests failed.'
     }
 
-    if ($NeedsBuild) {
-        Write-Host 'Building project images. If the local model image is missing, this step needs internet access and downloads the pinned model.'
-        & docker compose build
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Docker Compose could not build the project images.'
-        }
-    }
-    else {
-        Write-Host 'Project images are already available locally; skipping the build.'
-    }
-
-    foreach ($Image in $Images) {
-        $null = & docker image inspect $Image 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Required image '$Image' is still unavailable after image preparation."
-        }
-    }
-
-    Write-Host 'Starting the app and local model services...'
+    Write-Host 'Starting the app and local model services...' -ForegroundColor Cyan
     & docker compose up --no-build --detach llm-server app-node-1
     if ($LASTEXITCODE -ne 0) {
         throw 'Docker Compose could not start the app and model services.'
@@ -111,9 +84,9 @@ try {
         Start-Sleep -Seconds 5
     }
 
-    Write-Host 'Both services are healthy.'
+    Write-Host 'Both services are healthy.' -ForegroundColor Green
     Write-Host 'Web UI available at: http://localhost:8000' -ForegroundColor Cyan
-    Write-Host 'Starting the self-checking demo suite...'
+    Write-Host 'Starting the self-checking demo suite...' -ForegroundColor Cyan
     & docker compose up --no-build --abort-on-container-exit --exit-code-from client-runner
     $ExitCode = $LASTEXITCODE
     if ($ExitCode -eq 0) {

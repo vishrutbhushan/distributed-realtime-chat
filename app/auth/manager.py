@@ -183,6 +183,10 @@ class AuthManager:
 
         return dict(row)
 
+    def heartbeat(self, token: str):
+        """Refresh presence timestamp. Called on RPCs."""
+        self.validate_token(token)
+
     def update_presence(self, user_id: str, status: str = "active"):
         """Explicitly update status ('active' | 'inactive') and last_seen."""
         now = int(time.time())
@@ -191,6 +195,8 @@ class AuthManager:
             (status, now, user_id),
         )
         self.db.commit()
+
+    update_status = update_presence
 
     # ── Directory ─────────────────────────────────────────────────────────────
 

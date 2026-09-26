@@ -54,6 +54,10 @@ class Database:
     def conn(self) -> sqlite3.Connection:
         return self._get_conn()
 
+    @property
+    def lock(self) -> threading.RLock:
+        return self._lock
+
     def close(self):
         """Close all connections across threads."""
         with self._lock:

@@ -6,25 +6,45 @@ A distributed real-time chat and collaboration platform designed to demonstrate:
 - **1-on-1 Direct Messaging & Group Chat with Admin controls**
 - **PDF & Image file exchange**
 - **Local CPU-optimized LLM assistance (Smart Replies & Summarization over full history)**
-- **Web UI & Automated Verification Suite**
+- **Modern Responsive Web UI & Automated Verification Suite**
+- **Docker-only containerized architecture with build-time static verification**
 - **Architectural readiness for Raft consensus (Milestone 2)**
 
 ---
 
 ## 1. Quick Start (Docker Only)
 
-### Build and Run Full Automated Verification Suite
-```bash
-docker compose build --no-cache
-docker compose up --abort-on-container-exit
-```
-This builds all images, starts `llm-server`, `app-node-1`, and runs `client-runner` which executes the 14-point Milestone 1 verification suite, exits with code 0, and stops the containers.
+> **Important**: Docker is the sole supported and verified runtime environment.
 
-### Run Web UI Cluster in Detached Mode
+### Run the One-Click Automated Demo & Verification
+The startup script performs a clean-slate teardown (`docker compose down -v`), rebuilds images executing static unit tests at build time, starts services, and runs the 14-point verification suite:
+
+**Windows (PowerShell)**:
+```powershell
+.\scripts\start-demo.ps1
+```
+
+**Linux / macOS (Bash)**:
 ```bash
+bash scripts/start-demo.sh
+```
+
+### Manual Docker Compose Workflow
+```bash
+# 1. Clean previous state
+docker compose down -v --remove-orphans
+
+# 2. Build images (runs unit test suite inside Docker)
+docker compose build
+
+# 3. Run the automated 14-point verification test
+docker compose up --abort-on-container-exit
+
+# Or run the cluster in the background to use the Web UI
 docker compose up -d llm-server app-node-1
 ```
-Open **[http://localhost:8000](http://localhost:8000)** in any browser.
+
+Open **[http://localhost:8000](http://localhost:8000)** in your browser.
 
 ---
 
@@ -33,7 +53,7 @@ Open **[http://localhost:8000](http://localhost:8000)** in any browser.
 | # | Requirement | Implementation Details |
 |---|-------------|------------------------|
 | **1** | **Zero default channels & users** | Database starts completely empty (`/data/chat.db`). Users must sign up. |
-| **2** | **Web UI for all users** | Embedded HTTP Gateway on port 8000 serving `web/index.html` and translating REST calls into gRPC. |
+| **2** | **Web UI for all users** | Embedded HTTP Gateway on port 8000 serving clean modular HTML/CSS/JS and translating REST calls into gRPC. |
 | **3** | **Signup & Login restrictions** | Username: 3–20 alphanumeric chars/underscores (`^[a-zA-Z0-9_]{3,20}$`). Password: minimum 4 chars. |
 | **4** | **Active / Inactive Status** | Status is set to `active` upon signup/login, and `inactive` upon logout. Tracked in `users` table and refreshed via heartbeat. |
 | **5** | **1-on-1 Direct Messaging** | `SendDirectMessage` and `GetDirectMessages` RPCs. Messages indexed by `(sender_id, recipient_id, timestamp)`. Idempotency via `client_request_id`. |
@@ -59,14 +79,21 @@ distributed-realtime-chat/
 │   └── llm.proto           # App Node ↔ LLM Server RPCs
 │
 ├── app/                    # Monolithic Application Node
-│   ├── server.py           # gRPC ChatService + HTTP Web Gateway (:8000)
+│   ├── server.py           # Application entrypoint & runtime orchestrator
+│   ├── grpc_server.py      # Core gRPC ChatServicer implementation
+│   ├── web_gateway.py      # HTTP REST Web Gateway translating HTTP to gRPC
 │   ├── auth/manager.py     # Signup, login, logout, token session, active/inactive
 │   ├── chat/manager.py     # DMs, groups, memberships, real-time queues
 │   ├── presence/manager.py # Background idle sweeper
 │   └── files/manager.py    # Binary file store + SQLite metadata
 │
-├── web/                    # Single-Page Web Application
-│   └── index.html          # Modern UI (Auth, DMs, Groups, Files, AI toolbar)
+├── web/                    # Modular Single-Page Web Application
+│   ├── index.html          # Semantic HTML structure
+│   ├── css/
+│   │   └── style.css       # Clean stylesheet (layout, modals, typography)
+│   └── js/
+│       ├── api.js          # REST client communicating with Web Gateway
+│       └── app.js          # State management, DOM events, and UI rendering
 │
 ├── llm/                    # Standalone LLM Server
 │   ├── server.py           # gRPC LLMService implementation (:50060)
@@ -82,11 +109,17 @@ distributed-realtime-chat/
 │   └── state_machine.py    # StateMachine for committed log entries
 │
 ├── client/                 # Python Client
-│   └── client.py           # Interactive CLI + 14-point automated verification
+│   ├── client.py           # CLI entrypoint & argument parser
+│   ├── demo.py             # 14-point automated verification suite
+│   └── repl.py             # Interactive terminal chat REPL
+│
+├── tests/                  # Static Unit Tests (run at docker build time)
+│   ├── test_managers.py    # Tests for auth, chat, idempotency, groups, files
+│   └── test_llm_inference.py # Tests for prompt construction & context bounding
 │
 ├── docker/
-│   ├── Dockerfile.app      # App Node image (includes Web UI and proto compile)
-│   └── Dockerfile.llm      # LLM Server image
+│   ├── Dockerfile.app      # App Node image (build-time static tests + proto compilation)
+│   └── Dockerfile.llm      # LLM Server image (build-time static tests + proto compilation)
 │
 ├── docker-compose.yml      # Cluster deployment (App, LLM, Client Runner)
 └── docs/
@@ -116,14 +149,7 @@ distributed-realtime-chat/
 
 ---
 
-## 5. Enabling a Real LLM (Milestone 2)
+## 5. Testing and Verification Strategy
 
-By default, `USE_MOCK = True` is enabled in `llm/inference.py` so the system runs immediately on any CPU without downloading gigabytes of weights.
-
-To enable a real local CPU model:
-1. Open [`llm/inference.py`](llm/inference.py) and set `USE_MOCK = False`.
-2. Uncomment your preferred backend (Backend A: `llama.cpp` for GGUF, Backend B: `transformers` for HF, or Backend C: `ollama`).
-3. Uncomment the dependencies in [`docker/Dockerfile.llm`](docker/Dockerfile.llm) and rebuild:
-   ```bash
-   docker compose build llm-server && docker compose up -d llm-server
-   ```
+- **Build-time Static Tests**: During `docker compose build`, unit tests (`tests/test_managers.py` and `tests/test_llm_inference.py`) run inside the Docker container build steps. If any test fails, the Docker image build aborts immediately.
+- **Runtime Integration Tests**: `docker compose up --abort-on-container-exit` executes `client/demo.py`, verifying all 14 end-to-end distributed chat behaviors over actual gRPC network calls.

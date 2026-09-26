@@ -13,6 +13,8 @@ COPY storage/   ./storage/
 COPY raft/      ./raft/
 COPY client/    ./client/
 COPY web/       ./web/
+COPY llm/       ./llm/
+COPY tests/     ./tests/
 
 # Compile protobuf definitions → generated/
 RUN mkdir -p generated && \
@@ -24,10 +26,13 @@ RUN mkdir -p generated && \
         ./proto/raft.proto \
         ./proto/llm.proto
 
+ENV PYTHONPATH=/app:/app/generated
+
+# Run static unit tests at build time to verify integrity
+RUN python -m unittest discover -v tests
+
 # Persistent data directory (mounted via Docker volume)
 RUN mkdir -p /data/files
-
-ENV PYTHONPATH=/app:/app/generated
 
 EXPOSE 50051 8000
 

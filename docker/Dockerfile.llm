@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 
 COPY proto/ ./proto/
 COPY llm/ ./llm/
+COPY tests/ ./tests/
 
 ARG MODEL_REVISION=91cad51170dc346986eccefdc2dd33a9da36ead9
 ARG MODEL_FILENAME=qwen2.5-1.5b-instruct-q4_k_m.gguf
@@ -28,5 +29,8 @@ ENV PYTHONPATH=/app:/app/generated \
     MODEL_N_CTX=4096 \
     MODEL_THREADS=4 \
     MODEL_TIMEOUT_SECONDS=60
+
+# Run static unit tests at build time to verify integrity
+RUN python -m unittest -v tests/test_llm_inference.py
 
 CMD ["python", "llm/server.py"]

@@ -72,41 +72,9 @@ class ChatManager:
         if not rcpt:
             return False, {}, "Recipient user not found"
 
-        # Idempotency check
-        if client_request_id:
-            existing = self.db.fetchone(
-                """
-                SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
-                FROM messages m
-                JOIN users u ON m.sender_id = u.user_id
-                LEFT JOIN files f ON m.file_id = f.file_id
-                WHERE m.client_request_id = ?
-                """,
-                (client_request_id,),
-            )
-            if existing:
-                logger.info("[CHAT] Idempotent replay for DM request_id=%s", client_request_id)
-                return True, dict(existing), ""
-
-        message_id = str(uuid.uuid4())
-        ts = int(time.time() * 1000)
-        raft_log_index = 0
-
-        try:
-            self.db.execute(
-                """
-                INSERT INTO messages
-                    (message_id, chat_type, sender_id, recipient_id, group_id, content,
-                     file_id, timestamp, client_request_id, raft_log_index)
-                VALUES (?, 'DM', ?, ?, NULL, ?, ?, ?, ?, ?)
-                """,
-                (message_id, sender_id, recipient_id, content,
-                 file_id, ts, client_request_id, raft_log_index),
-            )
-            self.db.commit()
-        except Exception as exc:
-            self.db.rollback()
-            if "UNIQUE" in str(exc) and client_request_id:
+        with self.db.lock:
+            # Idempotency check
+            if client_request_id:
                 existing = self.db.fetchone(
                     """
                     SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
@@ -118,32 +86,65 @@ class ChatManager:
                     (client_request_id,),
                 )
                 if existing:
-                    logger.info("[CHAT] Concurrent replay for DM request_id=%s", client_request_id)
+                    logger.info("[CHAT] Idempotent replay for DM request_id=%s", client_request_id)
                     return True, dict(existing), ""
-            logger.error("[CHAT] send_dm insert error: %s", exc)
-            return False, {}, str(exc)
 
-        # Build message dictionary
-        row = self.db.fetchone(
-            """
-            SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
-            FROM messages m
-            JOIN users u ON m.sender_id = u.user_id
-            LEFT JOIN files f ON m.file_id = f.file_id
-            WHERE m.message_id = ?
-            """,
-            (message_id,),
-        )
-        msg = dict(row) if row else {
-            "message_id": message_id,
-            "chat_type": "DM",
-            "sender_id": sender_id,
-            "recipient_id": recipient_id,
-            "content": content,
-            "timestamp": ts,
-            "client_request_id": client_request_id or "",
-            "file_id": file_id or "",
-        }
+            message_id = str(uuid.uuid4())
+            ts = int(time.time() * 1000)
+            raft_log_index = 0
+
+            try:
+                self.db.execute(
+                    """
+                    INSERT INTO messages
+                        (message_id, chat_type, sender_id, recipient_id, group_id, content,
+                         file_id, timestamp, client_request_id, raft_log_index)
+                    VALUES (?, 'DM', ?, ?, NULL, ?, ?, ?, ?, ?)
+                    """,
+                    (message_id, sender_id, recipient_id, content,
+                     file_id, ts, client_request_id, raft_log_index),
+                )
+                self.db.commit()
+            except Exception as exc:
+                self.db.rollback()
+                if "UNIQUE" in str(exc) and client_request_id:
+                    existing = self.db.fetchone(
+                        """
+                        SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
+                        FROM messages m
+                        JOIN users u ON m.sender_id = u.user_id
+                        LEFT JOIN files f ON m.file_id = f.file_id
+                        WHERE m.client_request_id = ?
+                        """,
+                        (client_request_id,),
+                    )
+                    if existing:
+                        logger.info("[CHAT] Concurrent replay for DM request_id=%s", client_request_id)
+                        return True, dict(existing), ""
+                logger.error("[CHAT] send_dm insert error: %s", exc)
+                return False, {}, str(exc)
+
+            # Build message dictionary
+            row = self.db.fetchone(
+                """
+                SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
+                FROM messages m
+                JOIN users u ON m.sender_id = u.user_id
+                LEFT JOIN files f ON m.file_id = f.file_id
+                WHERE m.message_id = ?
+                """,
+                (message_id,),
+            )
+            msg = dict(row) if row else {
+                "message_id": message_id,
+                "chat_type": "DM",
+                "sender_id": sender_id,
+                "recipient_id": recipient_id,
+                "content": content,
+                "timestamp": ts,
+                "client_request_id": client_request_id or "",
+                "file_id": file_id or "",
+            }
 
         # Notify both sender and recipient
         self._notify_user(recipient_id, msg)
@@ -406,41 +407,9 @@ class ChatManager:
         if not member_check:
             return False, {}, "Cannot send message: You are not a member of this group"
 
-        # Idempotency check
-        if client_request_id:
-            existing = self.db.fetchone(
-                """
-                SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
-                FROM messages m
-                JOIN users u ON m.sender_id = u.user_id
-                LEFT JOIN files f ON m.file_id = f.file_id
-                WHERE m.client_request_id = ?
-                """,
-                (client_request_id,),
-            )
-            if existing:
-                logger.info("[CHAT] Idempotent replay for group message request_id=%s", client_request_id)
-                return True, dict(existing), ""
-
-        message_id = str(uuid.uuid4())
-        ts = int(time.time() * 1000)
-        raft_log_index = 0
-
-        try:
-            self.db.execute(
-                """
-                INSERT INTO messages
-                    (message_id, chat_type, sender_id, recipient_id, group_id, content,
-                     file_id, timestamp, client_request_id, raft_log_index)
-                VALUES (?, 'GROUP', ?, NULL, ?, ?, ?, ?, ?, ?)
-                """,
-                (message_id, sender_id, group_id, content,
-                 file_id, ts, client_request_id, raft_log_index),
-            )
-            self.db.commit()
-        except Exception as exc:
-            self.db.rollback()
-            if "UNIQUE" in str(exc) and client_request_id:
+        with self.db.lock:
+            # Idempotency check
+            if client_request_id:
                 existing = self.db.fetchone(
                     """
                     SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
@@ -452,35 +421,69 @@ class ChatManager:
                     (client_request_id,),
                 )
                 if existing:
-                    logger.info("[CHAT] Concurrent replay for group message request_id=%s", client_request_id)
+                    logger.info("[CHAT] Idempotent replay for group message request_id=%s", client_request_id)
                     return True, dict(existing), ""
-            logger.error("[CHAT] send_group_message insert error: %s", exc)
-            return False, {}, str(exc)
 
-        # Retrieve full message
-        row = self.db.fetchone(
-            """
-            SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
-            FROM messages m
-            JOIN users u ON m.sender_id = u.user_id
-            LEFT JOIN files f ON m.file_id = f.file_id
-            WHERE m.message_id = ?
-            """,
-            (message_id,),
-        )
-        msg = dict(row) if row else {
-            "message_id": message_id,
-            "chat_type": "GROUP",
-            "sender_id": sender_id,
-            "group_id": group_id,
-            "content": content,
-            "timestamp": ts,
-            "client_request_id": client_request_id or "",
-            "file_id": file_id or "",
-        }
+            message_id = str(uuid.uuid4())
+            ts = int(time.time() * 1000)
+            raft_log_index = 0
 
-        # Broadcast to all members of the group
-        members = self.db.fetchall("SELECT user_id FROM group_members WHERE group_id = ?", (group_id,))
+            try:
+                self.db.execute(
+                    """
+                    INSERT INTO messages
+                        (message_id, chat_type, sender_id, recipient_id, group_id, content,
+                         file_id, timestamp, client_request_id, raft_log_index)
+                    VALUES (?, 'GROUP', ?, NULL, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (message_id, sender_id, group_id, content,
+                     file_id, ts, client_request_id, raft_log_index),
+                )
+                self.db.commit()
+            except Exception as exc:
+                self.db.rollback()
+                if "UNIQUE" in str(exc) and client_request_id:
+                    existing = self.db.fetchone(
+                        """
+                        SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
+                        FROM messages m
+                        JOIN users u ON m.sender_id = u.user_id
+                        LEFT JOIN files f ON m.file_id = f.file_id
+                        WHERE m.client_request_id = ?
+                        """,
+                        (client_request_id,),
+                    )
+                    if existing:
+                        logger.info("[CHAT] Concurrent replay for group message request_id=%s", client_request_id)
+                        return True, dict(existing), ""
+                logger.error("[CHAT] send_group_message insert error: %s", exc)
+                return False, {}, str(exc)
+
+            # Retrieve full message
+            row = self.db.fetchone(
+                """
+                SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
+                FROM messages m
+                JOIN users u ON m.sender_id = u.user_id
+                LEFT JOIN files f ON m.file_id = f.file_id
+                WHERE m.message_id = ?
+                """,
+                (message_id,),
+            )
+            msg = dict(row) if row else {
+                "message_id": message_id,
+                "chat_type": "GROUP",
+                "sender_id": sender_id,
+                "group_id": group_id,
+                "content": content,
+                "timestamp": ts,
+                "client_request_id": client_request_id or "",
+                "file_id": file_id or "",
+            }
+
+            # Broadcast to all members of the group
+            members = self.db.fetchall("SELECT user_id FROM group_members WHERE group_id = ?", (group_id,))
+
         for m in members:
             self._notify_user(m["user_id"], msg)
 
