@@ -7,33 +7,38 @@ the application APIs. The persistent Docker volume is retained.
 
 ## One-time setup
 
-1. Install and start Docker Desktop, then wait for the Docker engine to be ready.
-2. Open PowerShell in the repository root.
-3. Build the application and model images while internet access is available:
+1. Install and start Docker Desktop (or Docker Engine), then wait for the Docker engine to be ready.
+2. The startup script builds missing application and model images automatically. Keep internet access available for the first build:
 
    ```powershell
-   docker compose build
+   .\scripts\start-demo.ps1
    ```
 
+   On macOS/Linux, run `bash scripts/start-demo.sh` from the repository root.
    The LLM image downloads Qwen2.5-1.5B-Instruct Q4_K_M at a pinned source
    revision, verifies its SHA-256 digest, and stores it inside the local image.
-   The model is about 1.12 GB and is not part of the source ZIP.
-4. The built images can then be run without internet access. The LLM container
-   loads the model before its gRPC port passes the readiness check.
+   The model is about 1.12 GB and is not part of the source ZIP. The script
+   waits for both app and LLM health checks before launching the client demo.
+   Once built, images can be run without internet access.
 
 ## Recording run
 
-Start screen recording with the terminal visible, then run this exact command
-from the repository root:
+Start screen recording with the terminal visible, then run the platform startup
+script from the repository root:
 
 ```powershell
-docker compose up --abort-on-container-exit --exit-code-from client-runner
+.\scripts\start-demo.ps1
 ```
 
-The CLI prints a `PASS` line only when all demo checks have succeeded. Stop the
-recording after the command exits with code `0`. Any other exit means the demo
-did not pass; inspect the preceding service logs and fix the issue before
-recording again.
+```bash
+bash scripts/start-demo.sh
+```
+
+The script checks Docker/Compose, builds any missing images, waits for the app
+and model to become healthy, then runs the self-checking demo. It returns `0`
+only when the CLI prints its final `PASS` line. Use `-Rebuild` in PowerShell or
+`--rebuild` on macOS/Linux after changing the source. Any nonzero exit means the
+demo did not pass; inspect the service logs and fix the issue before recording.
 
 ## Suggested 5–10 minute narration order
 

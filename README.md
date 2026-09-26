@@ -16,11 +16,12 @@ Raft consensus, replicated state, and fault-tolerance work.
 git clone <repo-url>
 cd distributed-realtime-chat
 
-# Build all images (compiles proto stubs inside Docker)
-docker compose build
+# Windows PowerShell: prepares missing images, waits for service health, and runs the demo
+.\scripts\start-demo.ps1
 
-# Run the verified end-to-end demo (returns its exit status)
-docker compose up --abort-on-container-exit --exit-code-from client-runner
+# macOS/Linux (same actions; use --rebuild after changing source)
+bash scripts/start-demo.sh
+# bash scripts/start-demo.sh --rebuild
 
 # Or keep the cluster alive and use the interactive CLI
 docker compose up -d llm-server app-node-1
@@ -30,10 +31,12 @@ python -m pip install grpcio grpcio-tools protobuf
 python client/client.py --server localhost:50051
 ```
 
-The first `docker compose build` needs internet access and downloads the pinned
-1.12 GB local model into the `llm-server` image. Later starts use the built image
-and model locally; runtime internet access is not needed. The app node starts
-even if the LLM server is unavailable, so ordinary chat remains usable.
+The startup scripts build images if any are missing. The first build needs
+internet access to download the pinned 1.12 GB local model into the `llm-server`
+image. Later starts use the built image and model locally; runtime internet
+access is not needed. Use `-Rebuild` on Windows or `--rebuild` on macOS/Linux to
+rebuild images after changing source. The script waits for both the app and model
+service health checks before starting the demo.
 
 ### Default credentials
 
@@ -157,10 +160,12 @@ distributed-realtime-chat/
 ## Model setup and offline runs
 
 The model version, revision, checksum, and license are recorded in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). On first setup, with internet
-access, run `docker compose build llm-server`. Docker verifies the model checksum
-while building the image. The 1.12 GB model is not stored in the source tree or
-source ZIP. Once the image exists locally, `docker compose up` can run offline.
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). The startup scripts build
+missing images automatically; alternatively, to prepare images without starting
+the demo, run `docker compose build` while internet access is available. Docker
+verifies the model checksum while building the image. The 1.12 GB model is not
+stored in the source tree or source ZIP. Once the image exists locally, the demo
+can run offline.
 
 If the model image has not been prepared, the LLM service intentionally does not
 advertise readiness or return canned replies. Check the build output and LLM
@@ -174,8 +179,9 @@ health status before recording the demo.
 # Unit checks run inside the app image
 docker compose run --rm --no-deps client-runner python -m unittest discover -s tests -v
 
-# Automated end-to-end demo; nonzero exit means at least one check failed
-docker compose up --abort-on-container-exit --exit-code-from client-runner
+# Automated end-to-end demo startup
+.\scripts\start-demo.ps1       # Windows PowerShell
+bash scripts/start-demo.sh      # macOS/Linux
 
 # Interactive CLI
 python client/client.py --server localhost:50051
