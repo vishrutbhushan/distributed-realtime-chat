@@ -1,7 +1,8 @@
 # Distributed Real-time Chat and Collaboration Tool
 
-A distributed real-time chat platform built to demonstrate core distributed-systems concepts:
-**gRPC-based communication · Raft consensus · replicated state · message ordering · fault tolerance · LLM integration**
+A real-time chat platform developed in milestones. M1 is a standalone gRPC
+application with persistent chat features and local LLM assistance; M2 adds
+Raft consensus, replicated state, and fault-tolerance work.
 
 > Academic project — Advanced Operating Systems / Distributed Systems  
 > Language: Python · Transport: gRPC · Consensus: Raft · Storage: SQLite · Runtime: Docker Compose
@@ -18,16 +19,21 @@ cd distributed-realtime-chat
 # Build all images (compiles proto stubs inside Docker)
 docker compose build
 
-# Run the full demo (client exits when done, then cluster stops)
-docker compose up --abort-on-container-exit
+# Run the verified end-to-end demo (returns its exit status)
+docker compose up --abort-on-container-exit --exit-code-from client-runner
 
 # Or keep the cluster alive and use the interactive CLI
 docker compose up -d llm-server app-node-1
 python -m pip install grpcio grpcio-tools protobuf
-python scripts/generate_proto.ps1        # Windows
-# bash scripts/generate_proto.sh         # Linux/Mac
+./scripts/generate_proto.ps1             # Windows PowerShell
+# bash scripts/generate_proto.sh         # Linux/macOS
 python client/client.py --server localhost:50051
 ```
+
+The first `docker compose build` needs internet access and downloads the pinned
+1.12 GB local model into the `llm-server` image. Later starts use the built image
+and model locally; runtime internet access is not needed. The app node starts
+even if the LLM server is unavailable, so ordinary chat remains usable.
 
 ### Default credentials
 
@@ -43,8 +49,8 @@ python client/client.py --server localhost:50051
 
 | Milestone | Deadline | Status |
 |-----------|----------|--------|
-| **M1** — gRPC app server + LLM server + full chat features | Sep 28, 2026 | ✅ Complete |
-| **M2** — Raft consensus, replication, fault tolerance | Nov 18, 2026 | 🔲 In progress |
+| **M1** — standalone gRPC app + local LLM + chat features | Sep 28, 2026 | Implementation and acceptance demo verified (Sep 26, 2026) |
+| **M2** — Raft consensus, replication, fault tolerance | Nov 18, 2026 | Not started; M1 runs in standalone mode |
 
 ---
 
@@ -87,7 +93,9 @@ python client/client.py --server localhost:50051
 - **Smart Replies** — 3 context-aware reply suggestions
 - **Conversation Summary** — bullet-point summary of recent messages
 - **Context Suggestion** — next-action recommendation based on conversation
-- Model is mocked by default; three real backends ready to uncomment
+- Local Qwen2.5 1.5B Instruct Q4_K_M GGUF model served over the existing LLM gRPC API
+- Model is loaded once before the LLM service reports healthy; inference is serialized and time bounded
+- If the model service is unavailable, AI responses report an error while chat remains available
 
 ---
 
@@ -114,7 +122,7 @@ distributed-realtime-chat/
 │
 ├── llm/                    # LLM inference server
 │   ├── server.py           # gRPC LLMService impl
-│   ├── inference.py        # Mock + 3 real backends (commented)
+│   ├── inference.py        # Local llama.cpp inference and response handling
 │   └── prompts.py          # Prompt templates
 │
 ├── storage/
@@ -133,38 +141,41 @@ distributed-realtime-chat/
 │
 ├── docker-compose.yml      # M1: 1 node + LLM + client runner
 ├── requirements.txt        # grpcio, grpcio-tools, protobuf
-├── requirements-llm.txt    # LLM deps (all commented, pick one)
+├── requirements-llm.txt    # CPU llama.cpp wheel + pinned HF downloader
+├── tests/                  # M1 manager and inference unit tests
+├── THIRD_PARTY_NOTICES.md  # Model and runtime licenses/revisions
 └── docs/
     ├── ARCHITECTURE.md
     ├── WALKTHROUGH.md
+    ├── MILESTONE1_DEMO.md
+    ├── REFLECTION_TEMPLATE.md
     └── MILESTONE2.md
 ```
 
 ---
 
-## Enabling a Real LLM
+## Model setup and offline runs
 
-Edit [`llm/inference.py`](llm/inference.py) and uncomment **one** backend:
+The model version, revision, checksum, and license are recorded in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). On first setup, with internet
+access, run `docker compose build llm-server`. Docker verifies the model checksum
+while building the image. The 1.12 GB model is not stored in the source tree or
+source ZIP. Once the image exists locally, `docker compose up` can run offline.
 
-| Backend | Model format | Best for |
-|---------|-------------|----------|
-| **llama.cpp** | GGUF | CPU-optimised, recommended |
-| **HuggingFace Transformers** | PyTorch | Any HF model |
-| **Ollama REST** | Any Ollama model | Simplest setup |
-
-Then:
-1. Set `USE_MOCK = False` in `inference.py`
-2. Uncomment the matching block in `requirements-llm.txt`
-3. Uncomment the install line in `docker/Dockerfile.llm`
-4. `docker compose build llm-server && docker compose up`
+If the model image has not been prepared, the LLM service intentionally does not
+advertise readiness or return canned replies. Check the build output and LLM
+health status before recording the demo.
 
 ---
 
 ## Running Tests / Demos
 
 ```bash
-# Automated end-to-end demo
-docker compose up --abort-on-container-exit
+# Unit checks run inside the app image
+docker compose run --rm --no-deps client-runner python -m unittest discover -s tests -v
+
+# Automated end-to-end demo; nonzero exit means at least one check failed
+docker compose up --abort-on-container-exit --exit-code-from client-runner
 
 # Interactive CLI
 python client/client.py --server localhost:50051
@@ -182,6 +193,10 @@ summarize
 suggest
 logout
 ```
+
+See [`docs/MILESTONE1_DEMO.md`](docs/MILESTONE1_DEMO.md) for first-time setup,
+repeat runs against the persistent volume, the exact recording order, and the
+checks the automated CLI demo performs.
 
 ---
 

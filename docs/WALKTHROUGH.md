@@ -1,8 +1,9 @@
 # Walkthrough — Milestone 1
 
-End-to-end walkthrough of every feature shipped in Milestone 1,
-including what each demo step does internally, log interpretation,
-and how to use the interactive client.
+Implementation notes for the M1 application. The current, self-checking
+recording flow and exact commands are in [MILESTONE1_DEMO.md](MILESTONE1_DEMO.md).
+This document's fixed example outputs are illustrative; local-model output is
+generated at runtime.
 
 ---
 
@@ -12,15 +13,15 @@ and how to use the interactive client.
 
 ```bash
 docker compose build
-docker compose up --abort-on-container-exit
+docker compose up --abort-on-container-exit --exit-code-from client-runner
 ```
 
-Three containers start in dependency order:
+The app and LLM services start independently; the client waits for the app:
 
 ```
-llm-server     → starts first (health-checked via GetLLMAnswer RPC)
-app-node-1     → starts after llm-server is healthy
-client-runner  → starts after app-node-1 is healthy, runs 18-step demo, exits 0
+llm-server     → loads the pinned local model, then passes a gRPC readiness check
+app-node-1     → starts independently so chat works when AI is unavailable
+client-runner  → starts after app-node-1 is healthy, runs the demo, exits 0 on PASS
 ```
 
 `--abort-on-container-exit` brings the cluster down cleanly once client-runner
@@ -249,9 +250,8 @@ Call chain:
 client-runner
   → ChatService.GetSmartReplies (app-node-1:50051)
       → LLMService.GetSmartReplies (llm-server:50060)
-          → inference.get_smart_replies()
-              → _mock_smart_replies()   [last message: "Let me check the logs." — no "?"]
-          ← ["Got it, thanks!", "Will do.", "Sounds good..."]
+              → local llama.cpp inference
+          ← three context-grounded suggestions
       ← SmartReplyResponse
   ← SmartReplyResponse (proxied)
 ```
@@ -260,49 +260,38 @@ The app server is a **transparent proxy** — clients never talk to the LLM serv
 directly. This lets the LLM server be replaced (different model, GPU hardware,
 external API) without any client changes.
 
-To enable a real model: edit [`llm/inference.py`](../llm/inference.py), uncomment
-one backend, set `USE_MOCK = False`.
+The real model is configured during image build and loaded before the LLM service
+opens its gRPC port. See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for
+its source revision and license.
 
 ---
 
 ### Step 15 — Conversation Summary
 
-```
-Summary of #milestone1-demo (6 messages):
-  - Participants: alice, bob
-  - 6 messages exchanged.
-  - (Enable a real LLM in llm/inference.py for intelligent summaries.)
-```
+The CLI prints a runtime-generated summary of recent chat topics, decisions,
+action items, and open questions.
 
 The app server fetches messages from its **local DB** (no extra network RPC),
 formats them as `"username: content"` strings, and sends them to the LLM server
 in a `SummarizeConversation` request.
 
-With a real model the summary extracts key topics, decisions, and action items.
+The local model produces a concise summary from the recent messages.
 
 ---
 
 ### Step 16 — Context Suggestion
 
-```
-suggestion = Suggested action: Review the deployment logs and
-             share findings in #milestone1-demo.
-```
+The CLI prints a runtime-generated next-step suggestion based on recent messages.
 
-The mock detects `"pipeline"` in the message history and returns a deployment
-hint. With a real model this uses the full conversation context to generate a
-personalised next-step recommendation for the current user.
+The local model receives recent messages and the current user's name, then
+generates one concrete next step grounded in that conversation.
 
 ---
 
 ### Steps 17–18 — Admin User Management + Logout
 
-```
-Admin adds user 'charlie'  success = True  msg = User created
-admin: Logged out
-alice: Logged out
-bob:   Logged out
-```
+The demo creates and removes a run-specific temporary account, verifies that it
+cannot log in afterward, then logs out its remaining sessions.
 
 `AddUser` is ADMIN-only; any USER token is rejected with `PERMISSION_DENIED`.
 
@@ -330,7 +319,7 @@ All server logs follow the pattern:
 | `[AUTH] Login user=admin` | Credentials verified, token issued |
 | `[CHAT] Created channel #general` | Channel inserted into DB |
 | `[CHAT] Idempotent replay request_id=...` | Duplicate request detected + returned |
-| `[FILES] Uploaded presentation.pdf (147 bytes)` | File stored on disk |
+| `[FILES] Uploaded demo-notes.txt (...)` | File stored on disk |
 | `[LLM] SmartReplies channel=milestone1-demo` | LLM server received smart reply request |
 | `[LLM] Summarize channel=milestone1-demo msgs=6` | LLM summarize request |
 | `[PRESENCE] Sweep error: ...` | Background sweep encountered a DB error |

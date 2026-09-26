@@ -2,10 +2,9 @@
 
 ## 1. Overview
 
-The system is a **distributed monolith**: every application node runs the same
-codebase and exposes the same gRPC API. Nodes reach consensus through **Raft**,
-replicate state through the **Raft log**, and communicate with clients directly
-— clients do not need to know who the leader is.
+The M1 deliverable is a standalone application node backed by SQLite. The
+architecture diagram below shows the planned multi-node M2 system: Raft
+consensus, replicated state, and fault recovery are not active in M1.
 
 ```
                     ┌──────────────────────────┐
@@ -81,8 +80,8 @@ app/server.py  (ChatServicer)
 llm/server.py  (LLMServicer)
 │
 ├── llm/inference.py
-│     USE_MOCK=True  →  rule-based mock responses
-│     USE_MOCK=False →  llama.cpp | HuggingFace | Ollama (uncomment one)
+│     Loads pinned Qwen2.5 GGUF model before opening the gRPC port
+│     CPU inference is serialized and time bounded
 │
 └── llm/prompts.py
       Prompt templates for smart reply · summarize · context suggestion
@@ -92,7 +91,7 @@ llm/server.py  (LLMServicer)
 
 ```
 client/client.py
-  --demo flag    →  automated 18-step walkthrough
+  --demo flag    →  self-checking M1 recording demo with unique run data
   interactive    →  REPL: send / history / smartreply / summarize / ...
 ```
 

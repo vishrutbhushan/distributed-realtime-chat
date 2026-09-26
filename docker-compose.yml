@@ -13,32 +13,31 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.llm
-    container_name: llm-server
     ports:
       - "50060:50060"
     environment:
       LLM_PORT: "50060"
+      MODEL_PATH: "/models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+      MODEL_N_CTX: "4096"
+      MODEL_THREADS: "4"
+      MODEL_TIMEOUT_SECONDS: "60"
     networks:
       - chat-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c",
-             "import grpc; import sys; sys.path.insert(0,'generated');\
-              import llm_pb2_grpc, llm_pb2;\
-              ch=grpc.insecure_channel('localhost:50060');\
-              stub=llm_pb2_grpc.LLMServiceStub(ch);\
-              stub.GetLLMAnswer(llm_pb2.LLMRequest(request_id='hc',query='ping',feature='SMART_REPLY'))"]
+             "import grpc; ch=grpc.insecure_channel('localhost:50060');\
+              grpc.channel_ready_future(ch).result(timeout=2); ch.close()"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 12
+      start_period: 120s
 
   # ── App node 1 (Milestone 1: STANDALONE) ───────────────────────────────────
   app-node-1:
     build:
       context: .
       dockerfile: docker/Dockerfile.app
-    container_name: app-node-1
     ports:
       - "50051:50051"
     environment:
@@ -50,19 +49,13 @@ services:
       # PEERS: ""   # comma-separated peer addresses for Milestone 2
     volumes:
       - node1-data:/data
-    depends_on:
-      llm-server:
-        condition: service_healthy
     networks:
       - chat-net
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c",
-             "import grpc; import sys; sys.path.insert(0,'generated');\
-              import chat_pb2_grpc, chat_pb2;\
-              ch=grpc.insecure_channel('localhost:50051');\
-              stub=chat_pb2_grpc.ChatServiceStub(ch);\
-              stub.GetNodeStatus(chat_pb2.GetNodeStatusRequest())"]
+             "import grpc; ch=grpc.insecure_channel('localhost:50051');\
+              grpc.channel_ready_future(ch).result(timeout=2); ch.close()"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -73,7 +66,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.app
-    container_name: client-runner
     environment:
       APP_SERVER: "app-node-1:50051"
     command: ["python", "client/client.py", "--server", "app-node-1:50051", "--demo"]

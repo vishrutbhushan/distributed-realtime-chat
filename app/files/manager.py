@@ -31,6 +31,11 @@ class FileManager:
         request_id: str = None,
     ) -> Tuple[bool, dict, str]:
         """Persist file and metadata. Returns (success, metadata_dict, message)."""
+        filename = (filename or "").strip()
+        if not filename or "\x00" in filename:
+            return False, {}, "A valid filename is required"
+        if not channel_id or not owner_id:
+            return False, {}, "Channel and owner are required"
         if len(data) > MAX_FILE_SIZE:
             return False, {}, f"File too large (max {MAX_FILE_SIZE // 1024 // 1024} MB)"
 
@@ -42,17 +47,25 @@ class FileManager:
             with open(storage_location, "wb") as fh:
                 fh.write(data)
 
-            self.db.execute(
-                """
-                INSERT INTO files
+            with self.db.transaction(immediate=True):
+                if not self.db.fetchone(
+                    "SELECT 1 FROM channels WHERE channel_id = ?", (channel_id,)
+                ):
+                    raise ValueError("Channel not found")
+                if not self.db.fetchone(
+                    "SELECT 1 FROM users WHERE user_id = ? AND active = 1", (owner_id,)
+                ):
+                    raise ValueError("File owner account is inactive or missing")
+                self.db.execute(
+                    """
+                    INSERT INTO files
+                        (file_id, filename, owner_id, channel_id,
+                         storage_location, size_bytes, content_type, uploaded_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
                     (file_id, filename, owner_id, channel_id,
-                     storage_location, size_bytes, content_type, uploaded_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (file_id, filename, owner_id, channel_id,
-                 storage_location, len(data), content_type, now),
-            )
-            self.db.commit()
+                     storage_location, len(data), content_type, now),
+                )
 
             meta = {
                 "file_id":          file_id,
@@ -67,6 +80,7 @@ class FileManager:
             logger.info("[FILES] Uploaded %s (%d bytes)", filename, len(data))
             return True, meta, "File uploaded"
         except Exception as exc:
+            self.db.rollback()
             # Clean up orphaned file
             if os.path.exists(storage_location):
                 os.remove(storage_location)
@@ -89,8 +103,12 @@ class FileManager:
 
     def list_files(self, channel_id: str) -> List[dict]:
         rows = self.db.fetchall(
-            "SELECT * FROM files WHERE channel_id = ? ORDER BY uploaded_at",
+            "SELECT * FROM files WHERE channel_id = ? ORDER BY uploaded_at, rowid",
             (channel_id,),
         )
         return [dict(r) for r in rows]
+
+    def get_file(self, file_id: str):
+        row = self.db.fetchone("SELECT * FROM files WHERE file_id = ?", (file_id,))
+        return dict(row) if row else None
 

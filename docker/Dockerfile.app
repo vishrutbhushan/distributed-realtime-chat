@@ -12,6 +12,9 @@ COPY app/       ./app/
 COPY storage/   ./storage/
 COPY raft/      ./raft/
 COPY client/    ./client/
+COPY llm/       ./llm/
+COPY scripts/   ./scripts/
+COPY tests/     ./tests/
 
 # Compile protobuf definitions → generated/
 RUN mkdir -p generated && \

@@ -99,19 +99,31 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def _seed_defaults(self):
         """Create default admin/users/channels on first start (idempotent)."""
-        # Users
-        ok, admin_id, _ = self.auth.create_user("admin", "admin123", "ADMIN")
-        if ok:
-            logger.info("[SEED] admin / admin123 created")
-        self.auth.create_user("alice", "alice123", "USER")
-        self.auth.create_user("bob",   "bob123",   "USER")
+        # Look up before inserting: failed UNIQUE inserts leave a transaction open
+        # on some SQLite configurations and made restarts lock the database.
+        for username, password, role in (
+            ("admin", "admin123", "ADMIN"),
+            ("alice", "alice123", "USER"),
+            ("bob", "bob123", "USER"),
+        ):
+            row = self.db.fetchone(
+                "SELECT user_id FROM users WHERE username = ?", (username,)
+            )
+            if not row:
+                ok, _, message = self.auth.create_user(username, password, role)
+                if not ok:
+                    raise RuntimeError(f"Could not seed {username}: {message}")
+                logger.info("[SEED] %s created", username)
 
         # Default channels (created by admin)
         row = self.db.fetchone("SELECT user_id FROM users WHERE username = 'admin'")
         if row:
             aid = row["user_id"]
             for name in ("general", "aos-project", "testing"):
-                self.chat.create_channel(name, aid)
+                if not self.chat.get_channel_by_name(name):
+                    ok, _, message = self.chat.create_channel(name, aid)
+                    if not ok:
+                        raise RuntimeError(f"Could not seed channel #{name}: {message}")
 
     # ── Auth helpers ──────────────────────────────────────────────────────────
 
@@ -135,6 +147,25 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         if sess and sess["role"] != "ADMIN":
             context.abort(grpc.StatusCode.PERMISSION_DENIED, "Admin role required")
         return sess
+
+    def _require_channel_member(self, token: str, channel_id: str, context):
+        sess = self._require_auth(token, context)
+        if not self.chat.get_channel(channel_id):
+            context.abort(grpc.StatusCode.NOT_FOUND, "Channel not found")
+        if not self.chat.is_member(channel_id, sess["user_id"]):
+            context.abort(grpc.StatusCode.PERMISSION_DENIED, "Join the channel first")
+        return sess
+
+    def _require_file_member(self, token: str, file_id: str, context):
+        sess = self._require_auth(token, context)
+        meta = self.files.get_file(file_id)
+        if not meta:
+            context.abort(grpc.StatusCode.NOT_FOUND, "File not found")
+        if not self.chat.get_channel(meta["channel_id"]):
+            context.abort(grpc.StatusCode.NOT_FOUND, "File channel no longer exists")
+        if not self.chat.is_member(meta["channel_id"], sess["user_id"]):
+            context.abort(grpc.StatusCode.PERMISSION_DENIED, "Join the channel first")
+        return sess, meta
 
     # ─────────────────────────────────────────────────────────────────────────
     # Auth RPCs
@@ -162,8 +193,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def CreateChannel(self, request, context):
         sess = self._require_admin(request.token, context)
-        if not sess:
-            return chat_pb2.CreateChannelResponse(success=False)
+        if not request.channel_name.strip():
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Channel name is required")
         ok, ch, msg = self.chat.create_channel(request.channel_name, sess["user_id"])
         if ok:
             return chat_pb2.CreateChannelResponse(
@@ -177,6 +208,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 ),
                 message=msg,
             )
+        if msg == "Channel name already exists":
+            context.abort(grpc.StatusCode.ALREADY_EXISTS, msg)
         return chat_pb2.CreateChannelResponse(success=False, message=msg)
 
     def DeleteChannel(self, request, context):
@@ -184,20 +217,24 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         if not sess:
             return chat_pb2.DeleteChannelResponse(success=False)
         ok, msg = self.chat.delete_channel(request.channel_id)
+        if not ok and msg == "Channel not found":
+            context.abort(grpc.StatusCode.NOT_FOUND, msg)
         return chat_pb2.DeleteChannelResponse(success=ok, message=msg)
 
     def JoinChannel(self, request, context):
         sess = self._require_auth(request.token, context)
-        if not sess:
-            return chat_pb2.JoinChannelResponse(success=False)
+        if not self.chat.get_channel(request.channel_id):
+            context.abort(grpc.StatusCode.NOT_FOUND, "Channel not found")
         ok, msg = self.chat.join_channel(request.channel_id, sess["user_id"])
         return chat_pb2.JoinChannelResponse(success=ok, message=msg)
 
     def LeaveChannel(self, request, context):
         sess = self._require_auth(request.token, context)
-        if not sess:
-            return chat_pb2.LeaveChannelResponse(success=False)
+        if not self.chat.get_channel(request.channel_id):
+            context.abort(grpc.StatusCode.NOT_FOUND, "Channel not found")
         ok, msg = self.chat.leave_channel(request.channel_id, sess["user_id"])
+        if not ok:
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, msg)
         return chat_pb2.LeaveChannelResponse(success=ok, message=msg)
 
     def ListChannels(self, request, context):
@@ -221,9 +258,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ─────────────────────────────────────────────────────────────────────────
 
     def SendMessage(self, request, context):
-        sess = self._require_auth(request.token, context)
-        if not sess:
-            return chat_pb2.SendMessageResponse(success=False)
+        sess = self._require_channel_member(request.token, request.channel_id, context)
 
         # TODO M2: route through Raft log instead of direct insert
         ok, msg, err = self.chat.send_message(
@@ -248,10 +283,22 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     file_id=msg.get("file_id") or "",
                 ),
             )
+        if err == "Channel not found":
+            context.abort(grpc.StatusCode.NOT_FOUND, err)
+        if "Join the channel" in err:
+            context.abort(grpc.StatusCode.PERMISSION_DENIED, err)
+        if "File not found" in err:
+            context.abort(grpc.StatusCode.NOT_FOUND, err)
+        if "required" in err.lower():
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, err)
+        if "Request ID was already used" in err:
+            context.abort(grpc.StatusCode.ALREADY_EXISTS, err)
+        if "inactive" in err.lower():
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, err)
         return chat_pb2.SendMessageResponse(success=False, error=err)
 
     def GetMessages(self, request, context):
-        self._require_auth(request.token, context)
+        self._require_channel_member(request.token, request.channel_id, context)
         msgs = self.chat.get_messages(
             channel_id=request.channel_id,
             limit=request.limit or 50,
@@ -276,9 +323,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def StreamMessages(self, request, context):
         """Server-side streaming: push new messages to subscribed clients."""
-        sess = self._require_auth(request.token, context)
-        if not sess:
-            return
+        sess = self._require_channel_member(request.token, request.channel_id, context)
 
         q = queue.Queue(maxsize=256)
         self.chat.subscribe(request.channel_id, q)
@@ -286,8 +331,26 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             "[STREAM] %s subscribed to channel %s",
             sess["username"], request.channel_id,
         )
+        last_heartbeat = time.monotonic()
         try:
+            # A small acknowledgement lets CLI clients synchronize publishers
+            # with the point at which the server has installed the subscription.
+            yield chat_pb2.MessageEvent(event_type="READY")
             while context.is_active():
+                current_session = self.auth.validate_token(request.token)
+                if not current_session:
+                    context.abort(
+                        grpc.StatusCode.UNAUTHENTICATED,
+                        "Session expired or logged out",
+                    )
+                if not self.chat.is_member(request.channel_id, sess["user_id"]):
+                    context.abort(
+                        grpc.StatusCode.PERMISSION_DENIED,
+                        "Channel membership was removed",
+                    )
+                if time.monotonic() - last_heartbeat >= 20:
+                    self.presence.update_presence(sess["user_id"])
+                    last_heartbeat = time.monotonic()
                 try:
                     msg = q.get(timeout=1.0)
                     yield chat_pb2.MessageEvent(
@@ -317,7 +380,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ─────────────────────────────────────────────────────────────────────────
 
     def GetPresence(self, request, context):
-        self._require_auth(request.token, context)
+        self._require_channel_member(request.token, request.channel_id, context)
         users = self.presence.get_channel_presence(request.channel_id)
         return chat_pb2.GetPresenceResponse(
             users=[
@@ -335,7 +398,10 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         sess = self._require_auth(request.token, context)
         if not sess:
             return chat_pb2.UpdatePresenceResponse(success=False)
-        self.presence.update_presence(sess["user_id"], request.status or "ONLINE")
+        status = (request.status or "ONLINE").upper()
+        if status not in ("ONLINE", "OFFLINE"):
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Status must be ONLINE or OFFLINE")
+        self.presence.update_presence(sess["user_id"], status)
         return chat_pb2.UpdatePresenceResponse(success=True)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -343,9 +409,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ─────────────────────────────────────────────────────────────────────────
 
     def UploadFile(self, request, context):
-        sess = self._require_auth(request.token, context)
-        if not sess:
-            return chat_pb2.UploadFileResponse(success=False)
+        sess = self._require_channel_member(request.token, request.channel_id, context)
+        if not request.filename.strip():
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "A valid filename is required")
         ok, meta, msg = self.files.upload_file(
             channel_id=request.channel_id,
             owner_id=sess["user_id"],
@@ -360,10 +426,16 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 file=self._file_meta(meta),
                 message=msg,
             )
+        if "Channel not found" in msg:
+            context.abort(grpc.StatusCode.NOT_FOUND, msg)
+        if "filename" in msg.lower() or "too large" in msg.lower():
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, msg)
+        if "owner account" in msg.lower():
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, msg)
         return chat_pb2.UploadFileResponse(success=False, message=msg)
 
     def DownloadFile(self, request, context):
-        self._require_auth(request.token, context)
+        self._require_file_member(request.token, request.file_id, context)
         ok, data, meta, msg = self.files.download_file(request.file_id)
         if ok:
             return chat_pb2.DownloadFileResponse(
@@ -375,7 +447,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         return chat_pb2.DownloadFileResponse(success=False, message=msg)
 
     def ListFiles(self, request, context):
-        self._require_auth(request.token, context)
+        self._require_channel_member(request.token, request.channel_id, context)
         files = self.files.list_files(request.channel_id)
         return chat_pb2.ListFilesResponse(files=[self._file_meta(f) for f in files])
 
@@ -401,11 +473,17 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         ok, uid, msg = self.auth.create_user(
             request.username, request.password, request.role or "USER"
         )
+        if not ok and msg == "Username already exists":
+            context.abort(grpc.StatusCode.ALREADY_EXISTS, msg)
+        if not ok and ("required" in msg.lower() or "Role must" in msg):
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, msg)
         return chat_pb2.AddUserResponse(success=ok, user_id=uid, message=msg)
 
     def RemoveUser(self, request, context):
         self._require_admin(request.token, context)
         ok, msg = self.auth.remove_user(request.user_id)
+        if not ok and msg == "User not found or already removed":
+            context.abort(grpc.StatusCode.NOT_FOUND, "User not found or already removed")
         return chat_pb2.RemoveUserResponse(success=ok, message=msg)
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -427,11 +505,33 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # LLM proxy RPCs  (client → app server → LLM server)
     # ─────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _llm_error(exc: Exception) -> str:
+        if isinstance(exc, grpc.RpcError):
+            code = exc.code()
+            if code == grpc.StatusCode.UNAVAILABLE:
+                return "LLM server unavailable"
+            if code == grpc.StatusCode.DEADLINE_EXCEEDED:
+                return "LLM inference timed out"
+            return f"LLM RPC failed ({code.name}): {exc.details() or 'no details'}"
+        return f"LLM request failed: {exc}"
+
     def GetSmartReplies(self, request, context):
-        sess = self._require_auth(request.token, context)
-        if not sess:
-            return chat_pb2.SmartReplyResponse(success=False)
         rid = request.request_id or str(uuid.uuid4())
+
+        if not request.channel_name.strip():
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Channel name is required")
+        channel = self.chat.get_channel_by_name(request.channel_name)
+        if not channel:
+            context.abort(grpc.StatusCode.NOT_FOUND, "Channel not found")
+        self._require_channel_member(request.token, channel["channel_id"], context)
+        recent = self.chat.get_messages(channel["channel_id"], limit=10)
+        recent_messages = [
+            f"{message['sender_username']}: {message['content']}" for message in recent
+        ]
+        current_message = request.current_message or (
+            recent_messages[-1] if recent_messages else ""
+        )
 
         if not self.llm:
             return chat_pb2.SmartReplyResponse(
@@ -442,10 +542,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             resp = self.llm.GetSmartReplies(
                 llm_pb2.SmartReplyRequest(
                     request_id=rid,
-                    recent_messages=list(request.recent_messages),
-                    current_message=request.current_message,
-                    channel_name=request.channel_name,
-                )
+                    recent_messages=recent_messages,
+                    current_message=current_message,
+                    channel_name=channel["name"],
+                ),
+                timeout=90,
             )
             return chat_pb2.SmartReplyResponse(
                 request_id=resp.request_id,
@@ -456,13 +557,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         except Exception as exc:
             logger.error("[LLM PROXY] GetSmartReplies: %s", exc)
             return chat_pb2.SmartReplyResponse(
-                request_id=rid, success=False, error=str(exc)
+                request_id=rid, success=False, error=self._llm_error(exc)
             )
 
     def SummarizeChannel(self, request, context):
-        sess = self._require_auth(request.token, context)
-        if not sess:
-            return chat_pb2.SummarizeResponse(success=False)
+        sess = self._require_channel_member(request.token, request.channel_id, context)
         rid = request.request_id or str(uuid.uuid4())
 
         # Fetch recent messages from DB
@@ -479,7 +578,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     request_id=rid,
                     messages=msg_texts,
                     channel_name=request.channel_name or request.channel_id,
-                )
+                ),
+                timeout=90,
             )
             return chat_pb2.SummarizeResponse(
                 request_id=resp.request_id,
@@ -490,13 +590,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         except Exception as exc:
             logger.error("[LLM PROXY] SummarizeChannel: %s", exc)
             return chat_pb2.SummarizeResponse(
-                request_id=rid, success=False, error=str(exc)
+                request_id=rid, success=False, error=self._llm_error(exc)
             )
 
     def GetContextSuggestion(self, request, context):
-        sess = self._require_auth(request.token, context)
-        if not sess:
-            return chat_pb2.ContextSuggestionResponse(success=False)
+        sess = self._require_channel_member(request.token, request.channel_id, context)
         rid = request.request_id or str(uuid.uuid4())
 
         msgs = self.chat.get_messages(request.channel_id, limit=20)
@@ -513,7 +611,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     recent_messages=msg_texts,
                     channel_name=request.channel_name or request.channel_id,
                     current_user=sess["username"],
-                )
+                ),
+                timeout=90,
             )
             return chat_pb2.ContextSuggestionResponse(
                 request_id=resp.request_id,
@@ -524,7 +623,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         except Exception as exc:
             logger.error("[LLM PROXY] GetContextSuggestion: %s", exc)
             return chat_pb2.ContextSuggestionResponse(
-                request_id=rid, success=False, error=str(exc)
+                request_id=rid, success=False, error=self._llm_error(exc)
             )
 
 
@@ -545,9 +644,8 @@ def serve():
             ("grpc.keepalive_timeout_ms",        5_000),
         ],
     )
-    chat_pb2_grpc.add_ChatServiceServicer_to_server(
-        ChatServicer(db, raft), server
-    )
+    servicer = ChatServicer(db, raft)
+    chat_pb2_grpc.add_ChatServiceServicer_to_server(servicer, server)
 
     addr = f"[::]:{PORT}"
     server.add_insecure_port(addr)
@@ -559,6 +657,8 @@ def serve():
     except KeyboardInterrupt:
         logger.info("[SERVER] Shutting down")
         server.stop(grace=5)
+    finally:
+        servicer.presence.stop()
 
 
 if __name__ == "__main__":

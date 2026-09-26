@@ -25,12 +25,21 @@ class PresenceManager:
         self._sweeper.start()
 
     def update_presence(self, user_id: str, status: str = "ONLINE"):
+        status = (status or "ONLINE").upper()
+        if status not in ("ONLINE", "OFFLINE"):
+            raise ValueError("Presence status must be ONLINE or OFFLINE")
         now = int(time.time())
-        self.db.execute(
-            "INSERT OR REPLACE INTO presence (user_id, status, last_seen) VALUES (?, ?, ?)",
-            (user_id, status, now),
-        )
-        self.db.commit()
+        with self.db.transaction(immediate=True):
+            if not self.db.fetchone(
+                "SELECT 1 FROM users WHERE user_id = ? AND active = 1", (user_id,)
+            ):
+                return False
+            self.db.execute(
+                "INSERT INTO presence (user_id, status, last_seen) VALUES (?, ?, ?)"
+                " ON CONFLICT(user_id) DO UPDATE SET status=excluded.status, last_seen=excluded.last_seen",
+                (user_id, status, now),
+            )
+        return True
 
     def get_all_presence(self) -> List[dict]:
         rows = self.db.fetchall(
@@ -38,6 +47,7 @@ class PresenceManager:
             SELECT p.user_id, u.username, p.status, p.last_seen
             FROM presence p
             JOIN users u ON p.user_id = u.user_id
+            WHERE u.active = 1
             """
         )
         return [dict(r) for r in rows]
@@ -49,7 +59,8 @@ class PresenceManager:
             FROM presence p
             JOIN users u ON p.user_id = u.user_id
             JOIN channel_members cm ON cm.user_id = p.user_id
-            WHERE cm.channel_id = ?
+            WHERE cm.channel_id = ? AND u.active = 1
+            ORDER BY u.username
             """,
             (channel_id,),
         )
@@ -60,12 +71,12 @@ class PresenceManager:
             time.sleep(SWEEP_INTERVAL)
             try:
                 threshold = int(time.time()) - OFFLINE_THRESHOLD
-                self.db.execute(
-                    "UPDATE presence SET status = 'OFFLINE'"
-                    " WHERE status = 'ONLINE' AND last_seen < ?",
-                    (threshold,),
-                )
-                self.db.commit()
+                with self.db.transaction(immediate=True):
+                    self.db.execute(
+                        "UPDATE presence SET status = 'OFFLINE'"
+                        " WHERE status = 'ONLINE' AND last_seen < ?",
+                        (threshold,),
+                    )
             except Exception as exc:
                 logger.error("[PRESENCE] Sweep error: %s", exc)
 

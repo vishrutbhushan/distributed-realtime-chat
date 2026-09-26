@@ -2,20 +2,20 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Base dependencies (gRPC only — no heavy ML libs yet)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-llm.txt ./
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir -r requirements-llm.txt
 
-# ── Uncomment when a real LLM model is configured ──────────────────────────
-# COPY requirements-llm.txt .
-# RUN pip install --no-cache-dir -r requirements-llm.txt
-# ───────────────────────────────────────────────────────────────────────────
-
-# Source code
 COPY proto/ ./proto/
-COPY llm/   ./llm/
+COPY llm/ ./llm/
 
-# Compile LLM proto only
+ARG MODEL_REVISION=91cad51170dc346986eccefdc2dd33a9da36ead9
+ARG MODEL_FILENAME=qwen2.5-1.5b-instruct-q4_k_m.gguf
+RUN mkdir -p /models && \
+    python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='Qwen/Qwen2.5-1.5B-Instruct-GGUF', filename='${MODEL_FILENAME}', revision='${MODEL_REVISION}', local_dir='/models')" && \
+    python -c "import hashlib,pathlib; p=pathlib.Path('/models/${MODEL_FILENAME}'); f=p.open('rb'); h=hashlib.file_digest(f,'sha256').hexdigest(); f.close(); expected='6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e'; assert h == expected, f'Model checksum mismatch: {h}'; print(f'Verified {p.name}: {h}')" && \
+    rm -rf /models/.cache /root/.cache/huggingface
+
 RUN mkdir -p generated && \
     python -m grpc_tools.protoc \
         -I ./proto \
@@ -23,14 +23,10 @@ RUN mkdir -p generated && \
         --grpc_python_out=./generated \
         ./proto/llm.proto
 
-# ── Uncomment to pre-download a model at build time ────────────────────────
-# ARG MODEL_NAME=microsoft/phi-2
-# RUN python -c "from transformers import AutoModelForCausalLM, AutoTokenizer; \
-#     AutoTokenizer.from_pretrained('${MODEL_NAME}'); \
-#     AutoModelForCausalLM.from_pretrained('${MODEL_NAME}')"
-# ───────────────────────────────────────────────────────────────────────────
-
-ENV PYTHONPATH=/app:/app/generated
+ENV PYTHONPATH=/app:/app/generated \
+    MODEL_PATH=/models/qwen2.5-1.5b-instruct-q4_k_m.gguf \
+    MODEL_N_CTX=4096 \
+    MODEL_THREADS=4 \
+    MODEL_TIMEOUT_SECONDS=60
 
 CMD ["python", "llm/server.py"]
-

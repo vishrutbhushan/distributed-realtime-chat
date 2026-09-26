@@ -8,6 +8,7 @@ import os
 import sqlite3
 import threading
 import logging
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,17 @@ class Database:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(
+            self.db_path,
+            check_same_thread=False,
+            timeout=5.0,
+            isolation_level="DEFERRED",
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -56,7 +63,8 @@ class Database:
                 username      TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 role          TEXT NOT NULL DEFAULT 'USER',
-                created_at    INTEGER NOT NULL
+                created_at    INTEGER NOT NULL,
+                active        INTEGER NOT NULL DEFAULT 1
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
@@ -132,6 +140,13 @@ class Database:
                 request_id   TEXT
             );
         """)
+        user_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "active" not in user_columns:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+            )
         conn.commit()
         conn.close()
 
@@ -139,6 +154,20 @@ class Database:
 
     def execute(self, query: str, params=()) -> sqlite3.Cursor:
         return self.conn.execute(query, params)
+
+    @contextmanager
+    def transaction(self, immediate: bool = False):
+        """Run one unit of work and always commit or roll it back."""
+        conn = self.conn
+        if conn.in_transaction:
+            raise RuntimeError("Nested database transactions are not supported")
+        conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
 
     def executemany(self, query: str, params_list) -> sqlite3.Cursor:
         return self.conn.executemany(query, params_list)
@@ -148,6 +177,13 @@ class Database:
 
     def rollback(self):
         self.conn.rollback()
+
+    def close(self):
+        """Close this thread's connection when a service or test is shutting down."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
 
     def fetchone(self, query: str, params=()):
         return self.conn.execute(query, params).fetchone()

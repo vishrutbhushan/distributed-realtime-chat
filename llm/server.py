@@ -2,8 +2,8 @@
 LLM gRPC server.
 
 Exposes LLMService defined in proto/llm.proto.
-Actual model inference is in llm/inference.py — model is mocked by default.
-See inference.py to configure a real model backend.
+Actual local model inference is in llm/inference.py. The server loads the
+pinned GGUF model before opening its gRPC port.
 """
 
 import logging
@@ -23,11 +23,7 @@ sys.path.insert(0, _ROOT)
 import llm_pb2
 import llm_pb2_grpc
 
-from llm.inference import (
-    get_context_suggestion,
-    get_smart_replies,
-    summarize_conversation,
-)
+from llm.inference import ChatInference
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +37,9 @@ PORT = int(os.environ.get("LLM_PORT", "50060"))
 
 class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
 
+    def __init__(self, inference: ChatInference):
+        self.inference = inference
+
     def GetLLMAnswer(self, request, context):
         logger.info("[LLM] GetLLMAnswer feature=%s", request.feature)
         rid     = request.request_id or str(uuid.uuid4())
@@ -48,18 +47,20 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
 
         try:
             if feature == "SMART_REPLY":
-                replies = get_smart_replies([], request.query, "general")
+                replies = self.inference.smart_replies(
+                    request.context.splitlines(), request.query, "general"
+                )
                 result  = "\n".join(replies)
             elif feature == "SUMMARIZE":
-                result = summarize_conversation(
-                    request.context.splitlines(), "general"
-                )
+                result = self.inference.summarize(request.context.splitlines(), "general")
             elif feature == "SUGGEST":
-                result = get_context_suggestion(
-                    request.context.splitlines(), "general", "user"
-                )
+                result = self.inference.suggest(request.context.splitlines(), "general", "user")
             else:
-                result = get_smart_replies([], request.query, "general")[0]
+                return llm_pb2.LLMResponse(
+                    request_id=rid,
+                    success=False,
+                    error=f"Unsupported LLM feature: {request.feature}",
+                )
 
             return llm_pb2.LLMResponse(request_id=rid, result=result, success=True)
         except Exception as exc:
@@ -70,7 +71,7 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
         rid = request.request_id or str(uuid.uuid4())
         logger.info("[LLM] SmartReplies channel=%s", request.channel_name)
         try:
-            suggestions = get_smart_replies(
+            suggestions = self.inference.smart_replies(
                 list(request.recent_messages),
                 request.current_message,
                 request.channel_name,
@@ -91,7 +92,7 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
             request.channel_name, len(request.messages),
         )
         try:
-            summary = summarize_conversation(
+            summary = self.inference.summarize(
                 list(request.messages), request.channel_name
             )
             return llm_pb2.SummarizeResponse(
@@ -107,7 +108,7 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
         rid = request.request_id or str(uuid.uuid4())
         logger.info("[LLM] ContextSuggestion channel=%s", request.channel_name)
         try:
-            suggestion = get_context_suggestion(
+            suggestion = self.inference.suggest(
                 list(request.recent_messages),
                 request.channel_name,
                 request.current_user,
@@ -123,6 +124,8 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
 
 
 def serve():
+    # Load before opening the gRPC port so a ready container has a usable model.
+    inference = ChatInference.from_env()
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=4),
         options=[
@@ -130,7 +133,7 @@ def serve():
             ("grpc.max_receive_message_length", 64 * 1024 * 1024),
         ],
     )
-    llm_pb2_grpc.add_LLMServiceServicer_to_server(LLMServicer(), server)
+    llm_pb2_grpc.add_LLMServiceServicer_to_server(LLMServicer(inference), server)
     addr = f"[::]:{PORT}"
     server.add_insecure_port(addr)
     server.start()

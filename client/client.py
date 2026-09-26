@@ -11,7 +11,9 @@ The --demo flag runs an automated end-to-end demonstration and exits.
 
 import argparse
 import os
+import queue
 import sys
+import threading
 import time
 import uuid
 
@@ -43,237 +45,402 @@ def make_stub(server: str) -> chat_pb2_grpc.ChatServiceStub:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def run_demo(stub: chat_pb2_grpc.ChatServiceStub):
-    sep = lambda: print("-" * 60)
+    def check(condition, message):
+        if not condition:
+            raise RuntimeError(message)
 
-    print("\n" + "=" * 60)
-    print(" DISTRIBUTED CHAT — MILESTONE 1 DEMO")
-    print("=" * 60)
+    def require_success(response, label):
+        check(response.success, f"{label} failed: {getattr(response, 'message', '') or getattr(response, 'error', '')}")
+        return response
 
-    # 1. Node status ──────────────────────────────────────────────────────────
-    sep()
-    print("[1] Node Status")
-    status = stub.GetNodeStatus(chat_pb2.GetNodeStatusRequest())
-    print(f"    node_id      = {status.node_id}")
-    print(f"    state        = {status.state}")
-    print(f"    term         = {status.term}")
-    print(f"    commit_index = {status.commit_index}")
+    suffix = uuid.uuid4().hex[:8]
+    channel_name = f"m1-demo-{suffix}"
+    admin_token = alice_token = bob_token = temp_user_token = None
+    demo_id = temp_user_id = file_id = None
+    removed_user = False
+    stream = None
 
-    # 2. Login ─────────────────────────────────────────────────────────────────
-    sep()
-    print("[2] Login as admin")
-    resp = stub.Login(chat_pb2.LoginRequest(username="admin", password="admin123"))
-    assert resp.success, f"Login failed: {resp.message}"
-    admin_token = resp.token
-    print(f"    token = ...{admin_token[-8:]}  role = {resp.role}")
+    print("\n" + "=" * 64)
+    print(" DISTRIBUTED CHAT — MILESTONE 1 RECORDING DEMO")
+    print(f" Run ID: {suffix}")
+    print("=" * 64)
+    try:
+        status = stub.GetNodeStatus(chat_pb2.GetNodeStatusRequest(), timeout=10)
+        print(f"[1] Node status: {status.node_id} / {status.state} / term {status.term}")
 
-    sep()
-    print("[3] Login as alice")
-    resp = stub.Login(chat_pb2.LoginRequest(username="alice", password="alice123"))
-    assert resp.success
-    alice_token = resp.token
-    print(f"    token = ...{alice_token[-8:]}")
-
-    sep()
-    print("[4] Login as bob")
-    resp = stub.Login(chat_pb2.LoginRequest(username="bob", password="bob123"))
-    assert resp.success
-    bob_token = resp.token
-    print(f"    token = ...{bob_token[-8:]}")
-
-    # 5. List channels ─────────────────────────────────────────────────────────
-    sep()
-    print("[5] List Channels")
-    channels = stub.ListChannels(chat_pb2.ListChannelsRequest(token=admin_token))
-    for ch in channels.channels:
-        print(f"    #{ch.name}  (members: {ch.member_count})")
-
-    general_id = next(
-        (ch.channel_id for ch in channels.channels if ch.name == "general"), None
-    )
-
-    # 6. Admin creates a channel ───────────────────────────────────────────────
-    sep()
-    print("[6] Admin creates #milestone1-demo")
-    resp = stub.CreateChannel(
-        chat_pb2.CreateChannelRequest(
-            token=admin_token,
-            channel_name="milestone1-demo",
-            request_id=str(uuid.uuid4()),
-        )
-    )
-    print(f"    success = {resp.success}  msg = {resp.message}")
-    demo_id = resp.channel.channel_id if resp.success else None
-
-    # 7–8. Alice and Bob join ──────────────────────────────────────────────────
-    if demo_id:
-        sep()
-        print("[7] Alice joins #milestone1-demo")
-        r = stub.JoinChannel(chat_pb2.JoinChannelRequest(token=alice_token, channel_id=demo_id))
-        print(f"    {r.message}")
-
-        sep()
-        print("[8] Bob joins #milestone1-demo")
-        r = stub.JoinChannel(chat_pb2.JoinChannelRequest(token=bob_token, channel_id=demo_id))
-        print(f"    {r.message}")
-
-    # 9. Send messages ─────────────────────────────────────────────────────────
-    sep()
-    print("[9] Sending messages in #milestone1-demo")
-    messages_to_send = [
-        (alice_token, "alice", "Hey everyone! Are we still meeting at 5?"),
-        (bob_token,   "bob",   "Yes! Meeting at 5 PM — don't forget the slides."),
-        (alice_token, "alice", "Got it. I'll handle the deployment demo."),
-        (bob_token,   "bob",   "The CI pipeline failed again — anyone know why?"),
-        (alice_token, "alice", "Let me check the logs."),
-    ]
-
-    for token, who, content in messages_to_send:
-        resp = stub.SendMessage(
-            chat_pb2.SendMessageRequest(
-                token=token,
-                channel_id=demo_id,
-                content=content,
-                client_request_id=str(uuid.uuid4()),
+        for username, password in (
+            ("admin", "admin123"),
+            ("alice", "alice123"),
+            ("bob", "bob123"),
+        ):
+            response = stub.Login(
+                chat_pb2.LoginRequest(username=username, password=password), timeout=10
             )
+            require_success(response, f"Login as {username}")
+            if username == "admin":
+                admin_token = response.token
+            elif username == "alice":
+                alice_token = response.token
+            else:
+                bob_token = response.token
+            print(f"[2] Logged in {username} ({response.role})")
+
+        channels = stub.ListChannels(
+            chat_pb2.ListChannelsRequest(token=admin_token), timeout=10
         )
-        ts = resp.message.timestamp // 1000
-        print(
-            f"    [{who}] {content}"
-            f"  (id: ...{resp.message.message_id[-8:]}  ts: {ts})"
+        channel_names = {channel.name for channel in channels.channels}
+        check(
+            {"general", "aos-project", "testing"} <= channel_names,
+            "One or more default channels are missing",
         )
-        time.sleep(0.05)
+        print(f"[3] Channels in persistent database: {', '.join('#' + c.name for c in channels.channels)}")
 
-    # 10. Idempotency demo ─────────────────────────────────────────────────────
-    sep()
-    print("[10] Idempotency test (same request_id sent twice)")
-    rid = str(uuid.uuid4())
-    req = chat_pb2.SendMessageRequest(
-        token=alice_token,
-        channel_id=demo_id,
-        content="This message is sent twice (idempotency test)",
-        client_request_id=rid,
-    )
-    r1 = stub.SendMessage(req)
-    r2 = stub.SendMessage(req)
-    print(f"    r1.message_id = ...{r1.message.message_id[-8:]}")
-    print(f"    r2.message_id = ...{r2.message.message_id[-8:]}")
-    same = r1.message.message_id == r2.message.message_id
-    print(f"    Same ID? {same}  ← should be True")
+        created = stub.CreateChannel(
+            chat_pb2.CreateChannelRequest(
+                token=admin_token,
+                channel_name=channel_name,
+                request_id=str(uuid.uuid4()),
+            ),
+            timeout=10,
+        )
+        require_success(created, "Admin create channel")
+        demo_id = created.channel.channel_id
+        print(f"[4] Admin created #{channel_name}")
 
-    # 11. Chat history ─────────────────────────────────────────────────────────
-    sep()
-    print("[11] Get message history from #milestone1-demo")
-    history = stub.GetMessages(
-        chat_pb2.GetMessagesRequest(token=alice_token, channel_id=demo_id, limit=20)
-    )
-    for m in history.messages:
-        print(f"    [{m.sender_username}] {m.content}")
+        for username, token in (("alice", alice_token), ("bob", bob_token)):
+            joined = stub.JoinChannel(
+                chat_pb2.JoinChannelRequest(token=token, channel_id=demo_id), timeout=10
+            )
+            require_success(joined, f"{username} join channel")
+        print("[5] Alice and Bob joined; sending channel conversation")
 
-    # 12. Presence ─────────────────────────────────────────────────────────────
-    sep()
-    print("[12] Channel presence")
-    pres = stub.GetPresence(
-        chat_pb2.GetPresenceRequest(token=alice_token, channel_id=demo_id)
-    )
-    for u in pres.users:
-        print(f"    {u.username}  →  {u.status}")
+        conversation = [
+            (alice_token, "Hey everyone! Are we still meeting at 5?"),
+            (bob_token, "Yes! Meeting at 5 PM — don't forget the slides."),
+            (alice_token, "Got it. I'll handle the deployment demo."),
+            (bob_token, "The CI pipeline failed again — anyone know why?"),
+            (alice_token, "Let me check the logs."),
+        ]
+        for token, content in conversation:
+            sent = stub.SendMessage(
+                chat_pb2.SendMessageRequest(
+                    token=token,
+                    channel_id=demo_id,
+                    content=content,
+                    client_request_id=str(uuid.uuid4()),
+                ),
+                timeout=10,
+            )
+            require_success(sent, "Send message")
+            print(f"    {sent.message.sender_username}: {sent.message.content}")
 
-    # 13. File upload & download ───────────────────────────────────────────────
-    sep()
-    print("[13] Upload a file")
-    file_content = b"This is a sample presentation file for the demo.\n" * 3
-    upload_resp = stub.UploadFile(
-        chat_pb2.UploadFileRequest(
+        rid = str(uuid.uuid4())
+        retry = chat_pb2.SendMessageRequest(
             token=alice_token,
             channel_id=demo_id,
-            filename="presentation.pdf",
-            data=file_content,
-            content_type="application/pdf",
-            request_id=str(uuid.uuid4()),
+            content="Idempotency retry: this appears once.",
+            client_request_id=rid,
         )
-    )
-    print(f"    success  = {upload_resp.success}  msg = {upload_resp.message}")
-    if upload_resp.success:
-        print(f"    file_id  = ...{upload_resp.file.file_id[-8:]}")
-        print(f"    size     = {upload_resp.file.size_bytes} bytes")
-        dl = stub.DownloadFile(
-            chat_pb2.DownloadFileRequest(token=bob_token, file_id=upload_resp.file.file_id)
+        first = require_success(stub.SendMessage(retry, timeout=10), "First idempotent send")
+        second = require_success(stub.SendMessage(retry, timeout=10), "Retried idempotent send")
+        check(first.message.message_id == second.message.message_id, "Retry created a duplicate message")
+        print("[6] Retried send returned the same message ID")
+
+        print("[7] Live stream: Alice subscribes; Bob publishes")
+        ready = threading.Event()
+        stream_events = queue.Queue()
+        stream = stub.StreamMessages(
+            chat_pb2.StreamMessagesRequest(token=alice_token, channel_id=demo_id)
         )
-        print(f"    download = {'OK' if dl.success else 'FAIL'}")
-        if dl.success:
-            print(f"    content  = {dl.data[:50].decode()}...")
 
-    # 14. LLM: Smart replies ───────────────────────────────────────────────────
-    sep()
-    print("[14] LLM Smart Replies")
-    msgs_text = [f"{m.sender_username}: {m.content}" for m in history.messages]
-    last_msg  = msgs_text[-1] if msgs_text else "Are we still on for 5?"
-    llm_resp = stub.GetSmartReplies(
-        chat_pb2.SmartReplyRequest(
-            token=alice_token,
-            request_id=str(uuid.uuid4()),
-            recent_messages=msgs_text[-10:],
-            current_message=last_msg,
-            channel_name="milestone1-demo",
+        def read_stream():
+            try:
+                for event in stream:
+                    if event.event_type == "READY":
+                        ready.set()
+                    else:
+                        stream_events.put(event)
+            except Exception as exc:
+                stream_events.put(exc)
+
+        reader = threading.Thread(target=read_stream, name="demo-stream-reader", daemon=True)
+        reader.start()
+        check(ready.wait(timeout=10), "Stream subscription did not become ready")
+        live_text = f"Live stream check {suffix}"
+        live = require_success(
+            stub.SendMessage(
+                chat_pb2.SendMessageRequest(
+                    token=bob_token,
+                    channel_id=demo_id,
+                    content=live_text,
+                    client_request_id=str(uuid.uuid4()),
+                ),
+                timeout=10,
+            ),
+            "Publish live stream message",
         )
-    )
-    print(f"    success = {llm_resp.success}")
-    for i, s in enumerate(llm_resp.suggestions, 1):
-        print(f"    [{i}] {s}")
+        try:
+            streamed = stream_events.get(timeout=10)
+        except queue.Empty as exc:
+            raise RuntimeError("Timed out waiting for streamed message") from exc
+        if isinstance(streamed, Exception):
+            raise RuntimeError(f"Stream failed: {streamed}")
+        check(streamed.event_type == "NEW_MESSAGE", f"Unexpected stream event {streamed.event_type}")
+        check(streamed.message.message_id == live.message.message_id, "Stream delivered the wrong message")
+        print(f"    Alice received Bob's message live: {streamed.message.content}")
+        stream.cancel()
+        stream = None
 
-    # 15. LLM: Summarize ───────────────────────────────────────────────────────
-    sep()
-    print("[15] LLM Conversation Summary")
-    sum_resp = stub.SummarizeChannel(
-        chat_pb2.SummarizeRequest(
-            token=admin_token,
-            request_id=str(uuid.uuid4()),
-            channel_id=demo_id,
-            channel_name="milestone1-demo",
-            limit=20,
+        revoked_stream = stub.StreamMessages(
+            chat_pb2.StreamMessagesRequest(token=alice_token, channel_id=demo_id), timeout=10
         )
-    )
-    print(f"    success = {sum_resp.success}")
-    print(f"    summary =\n{sum_resp.summary}")
-
-    # 16. LLM: Context suggestion ──────────────────────────────────────────────
-    sep()
-    print("[16] LLM Context Suggestion")
-    ctx_resp = stub.GetContextSuggestion(
-        chat_pb2.ContextSuggestionRequest(
-            token=bob_token,
-            request_id=str(uuid.uuid4()),
-            channel_id=demo_id,
-            channel_name="milestone1-demo",
+        ready_event = next(revoked_stream)
+        check(ready_event.event_type == "READY", "Second stream did not subscribe")
+        left = stub.LeaveChannel(
+            chat_pb2.LeaveChannelRequest(token=alice_token, channel_id=demo_id), timeout=10
         )
-    )
-    print(f"    success    = {ctx_resp.success}")
-    print(f"    suggestion = {ctx_resp.suggestion}")
-
-    # 17. Admin: add user ──────────────────────────────────────────────────────
-    sep()
-    print("[17] Admin adds user 'charlie'")
-    add_resp = stub.AddUser(
-        chat_pb2.AddUserRequest(
-            token=admin_token,
-            username="charlie",
-            password="charlie123",
-            role="USER",
-            request_id=str(uuid.uuid4()),
+        require_success(left, "Leave channel during stream")
+        try:
+            next(revoked_stream)
+            raise RuntimeError("An open stream remained authorized after membership removal")
+        except grpc.RpcError as exc:
+            check(exc.code() == grpc.StatusCode.PERMISSION_DENIED,
+                  f"Revoked stream returned {exc.code()}, expected PERMISSION_DENIED")
+        finally:
+            revoked_stream.cancel()
+        rejoined = stub.JoinChannel(
+            chat_pb2.JoinChannelRequest(token=alice_token, channel_id=demo_id), timeout=10
         )
-    )
-    print(f"    success = {add_resp.success}  msg = {add_resp.message}")
+        require_success(rejoined, "Rejoin after stream revocation test")
+        print("    Removing membership revoked Alice's already-open stream")
 
-    # 18. Logout ───────────────────────────────────────────────────────────────
-    sep()
-    print("[18] Logout all users")
-    for name, token in [("admin", admin_token), ("alice", alice_token), ("bob", bob_token)]:
-        r = stub.Logout(chat_pb2.LogoutRequest(token=token))
-        print(f"    {name}: {r.message}")
+        history = stub.GetMessages(
+            chat_pb2.GetMessagesRequest(token=alice_token, channel_id=demo_id, limit=50),
+            timeout=10,
+        )
+        history_text = [m.content for m in history.messages]
+        check(history_text.count("Idempotency retry: this appears once.") == 1, "History contains a duplicate retry")
+        check(live_text in history_text, "Live message is missing from persistent history")
+        check(history_text.index(conversation[0][1]) < history_text.index(conversation[-1][1]), "History order is incorrect")
+        print(f"[8] History contains {len(history.messages)} ordered messages")
 
-    sep()
-    print("\n  ✓ Milestone 1 demo complete!")
-    print("=" * 60 + "\n")
+        try:
+            stub.CreateChannel(
+                chat_pb2.CreateChannelRequest(
+                    token=alice_token,
+                    channel_name=f"unauthorized-{suffix}",
+                    request_id=str(uuid.uuid4()),
+                ),
+                timeout=10,
+            )
+            raise RuntimeError("A non-admin user was able to create a channel")
+        except grpc.RpcError as exc:
+            check(exc.code() == grpc.StatusCode.PERMISSION_DENIED,
+                  f"Unauthorized admin operation returned {exc.code()}, expected PERMISSION_DENIED")
+        print("[9] Non-admin channel creation correctly returned PERMISSION_DENIED")
+
+        presence = stub.GetPresence(
+            chat_pb2.GetPresenceRequest(token=alice_token, channel_id=demo_id), timeout=10
+        )
+        check({u.username for u in presence.users} >= {"alice", "bob"}, "Channel presence omitted a logged-in member")
+        print("[10] Channel presence reports Alice and Bob online")
+
+        file_content = (
+            f"AOS Milestone 1 demo notes\nRun: {suffix}\n"
+            "Meeting: 5 PM; Alice owns the deployment demo; Bob is checking the CI failure.\n"
+        ).encode("utf-8")
+        uploaded = stub.UploadFile(
+            chat_pb2.UploadFileRequest(
+                token=alice_token,
+                channel_id=demo_id,
+                filename="demo-notes.txt",
+                data=file_content,
+                content_type="text/plain",
+                request_id=str(uuid.uuid4()),
+            ),
+            timeout=10,
+        )
+        require_success(uploaded, "Upload text file")
+        file_id = uploaded.file.file_id
+        downloaded = stub.DownloadFile(
+            chat_pb2.DownloadFileRequest(token=bob_token, file_id=file_id), timeout=10
+        )
+        require_success(downloaded, "Download shared file")
+        check(downloaded.data == file_content, "Downloaded file bytes did not match uploaded bytes")
+        print(f"[11] Shared {uploaded.file.filename}; verified all {len(file_content)} bytes")
+
+        print("[12] LLM smart replies (real local model)")
+        inference_started = time.perf_counter()
+        replies = stub.GetSmartReplies(
+            chat_pb2.SmartReplyRequest(
+                token=alice_token,
+                request_id=str(uuid.uuid4()),
+                current_message=conversation[3][1],
+                channel_name=channel_name,
+            ),
+            timeout=100,
+        )
+        require_success(replies, "Smart replies")
+        print(f"    inference completed in {time.perf_counter() - inference_started:.2f}s")
+        check(len(replies.suggestions) == 3, f"Expected 3 suggestions, got {len(replies.suggestions)}")
+        check(all(s.strip() and "mock" not in s.lower() for s in replies.suggestions), "Smart replies were empty or mock output")
+        for index, suggestion in enumerate(replies.suggestions, 1):
+            print(f"    {index}. {suggestion}")
+
+        inference_started = time.perf_counter()
+        summary = stub.SummarizeChannel(
+            chat_pb2.SummarizeRequest(
+                token=alice_token,
+                request_id=str(uuid.uuid4()),
+                channel_id=demo_id,
+                channel_name=channel_name,
+                limit=20,
+            ),
+            timeout=100,
+        )
+        require_success(summary, "Conversation summary")
+        print(f"    inference completed in {time.perf_counter() - inference_started:.2f}s")
+        check(summary.summary.strip() and "mock" not in summary.summary.lower(), "Summary was empty or mock output")
+        print("[13] LLM conversation summary")
+        print(summary.summary)
+
+        inference_started = time.perf_counter()
+        suggestion = stub.GetContextSuggestion(
+            chat_pb2.ContextSuggestionRequest(
+                token=bob_token,
+                request_id=str(uuid.uuid4()),
+                channel_id=demo_id,
+                channel_name=channel_name,
+            ),
+            timeout=100,
+        )
+        require_success(suggestion, "Next-step suggestion")
+        print(f"    inference completed in {time.perf_counter() - inference_started:.2f}s")
+        check(suggestion.suggestion.strip() and "mock" not in suggestion.suggestion.lower(), "Next-step suggestion was empty or mock output")
+        print("[14] LLM concrete next step")
+        print(suggestion.suggestion)
+
+        username = f"demo-user-{suffix}"
+        added = stub.AddUser(
+            chat_pb2.AddUserRequest(
+                token=admin_token,
+                username=username,
+                password=f"demo-{suffix}-password",
+                role="USER",
+                request_id=str(uuid.uuid4()),
+            ),
+            timeout=10,
+        )
+        require_success(added, "Add temporary demo user")
+        temp_user_id = added.user_id
+        temp_login = stub.Login(
+            chat_pb2.LoginRequest(username=username, password=f"demo-{suffix}-password"),
+            timeout=10,
+        )
+        require_success(temp_login, "Login temporary demo user")
+        temp_user_token = temp_login.token
+
+        def expect_permission_denied(label, operation):
+            try:
+                operation()
+                raise RuntimeError(f"Non-member was able to {label}")
+            except grpc.RpcError as exc:
+                check(exc.code() == grpc.StatusCode.PERMISSION_DENIED,
+                      f"Non-member {label} returned {exc.code()}, expected PERMISSION_DENIED")
+
+        expect_permission_denied(
+            "read message history",
+            lambda: stub.GetMessages(
+                chat_pb2.GetMessagesRequest(token=temp_user_token, channel_id=demo_id), timeout=10
+            ),
+        )
+        expect_permission_denied(
+            "read channel presence",
+            lambda: stub.GetPresence(
+                chat_pb2.GetPresenceRequest(token=temp_user_token, channel_id=demo_id), timeout=10
+            ),
+        )
+        expect_permission_denied(
+            "list channel files",
+            lambda: stub.ListFiles(
+                chat_pb2.ListFilesRequest(token=temp_user_token, channel_id=demo_id), timeout=10
+            ),
+        )
+        expect_permission_denied(
+            "download a channel file",
+            lambda: stub.DownloadFile(
+                chat_pb2.DownloadFileRequest(token=temp_user_token, file_id=file_id), timeout=10
+            ),
+        )
+        denied_stream = stub.StreamMessages(
+            chat_pb2.StreamMessagesRequest(token=temp_user_token, channel_id=demo_id), timeout=10
+        )
+        try:
+            next(denied_stream)
+            raise RuntimeError("Non-member was able to stream channel messages")
+        except grpc.RpcError as exc:
+            check(exc.code() == grpc.StatusCode.PERMISSION_DENIED,
+                  f"Non-member stream returned {exc.code()}, expected PERMISSION_DENIED")
+        print("[15] Non-member history, stream, presence, and file access were denied")
+
+        removed = stub.RemoveUser(
+            chat_pb2.RemoveUserRequest(token=admin_token, user_id=temp_user_id), timeout=10
+        )
+        require_success(removed, "Remove temporary demo user")
+        removed_user = True
+        login_after_removal = stub.Login(
+            chat_pb2.LoginRequest(username=username, password=f"demo-{suffix}-password"),
+            timeout=10,
+        )
+        check(not login_after_removal.success, "Removed user was still able to log in")
+        print("[16] Admin removed a user; the removed account cannot log in")
+
+        deleted = stub.DeleteChannel(
+            chat_pb2.DeleteChannelRequest(token=admin_token, channel_id=demo_id), timeout=10
+        )
+        require_success(deleted, "Delete demo channel")
+        demo_id = None
+        try:
+            stub.DownloadFile(
+                chat_pb2.DownloadFileRequest(token=bob_token, file_id=file_id), timeout=10
+            )
+            raise RuntimeError("Deleted channel left its file metadata accessible")
+        except grpc.RpcError as exc:
+            check(exc.code() == grpc.StatusCode.NOT_FOUND,
+                  f"Deleted channel file lookup returned {exc.code()}, expected NOT_FOUND")
+        print("[17] Demo channel and file metadata cleaned up")
+
+        print("[18] Logging out")
+        for username, token in (("admin", admin_token), ("alice", alice_token), ("bob", bob_token)):
+            logout = stub.Logout(chat_pb2.LogoutRequest(token=token), timeout=10)
+            require_success(logout, f"Logout {username}")
+        print("\n  PASS — all Milestone 1 recording-demo checks completed")
+        print("=" * 64 + "\n")
+    finally:
+        if stream is not None:
+            stream.cancel()
+        if temp_user_id and not removed_user and admin_token:
+            try:
+                stub.RemoveUser(
+                    chat_pb2.RemoveUserRequest(token=admin_token, user_id=temp_user_id),
+                    timeout=10,
+                )
+            except grpc.RpcError:
+                pass
+        if demo_id and admin_token:
+            try:
+                stub.DeleteChannel(
+                    chat_pb2.DeleteChannelRequest(token=admin_token, channel_id=demo_id),
+                    timeout=10,
+                )
+            except grpc.RpcError:
+                pass
+        for token in (admin_token, alice_token, bob_token, temp_user_token):
+            if token:
+                try:
+                    stub.Logout(chat_pb2.LogoutRequest(token=token), timeout=10)
+                except grpc.RpcError:
+                    pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
