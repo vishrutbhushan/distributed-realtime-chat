@@ -9,11 +9,11 @@ This guide covers running and verifying Milestone 1:
 
 ## 1. Quick Startup Options
 
-### Option A: Using the Automated Startup Script
+### Option A: Using the One-Click Startup Script
 
-On Windows (PowerShell):
-```powershell
-.\scripts\start-demo.ps1
+On Windows (Command Prompt / PowerShell / File Explorer):
+```cmd
+.\start-demo.bat
 ```
 
 On Linux / macOS:
@@ -21,19 +21,16 @@ On Linux / macOS:
 bash scripts/start-demo.sh
 ```
 
-These scripts verify Docker engine health, build missing container images (including the pinned GGUF local model), wait for health checks to pass, and execute the automated self-checking test suite.
+These scripts tear down previous state, build images (executing static self-tests at build time), start `llm-server` and `app-node-1`, and stream live logs.
 
 ### Option B: Using Docker Compose Directly
 
 ```bash
-# Build images
+# Build images (executes static self-tests)
 docker compose build
 
-# Start services in background
-docker compose up -d llm-server app-node-1
-
-# Run the automated demo suite
-docker compose run --rm client-runner
+# Start services in foreground with live logs
+docker compose up
 ```
 
 ---
@@ -59,18 +56,17 @@ http://localhost:8000
 
 To verify that core chat continues operating without interruption if the LLM service goes offline:
 
-```powershell
-# Stop the LLM service
-docker compose stop llm-server
-
-# Run the resilience check
-docker compose run --rm client-runner python scripts/smoke_llm_unavailable.py --server app-node-1:50051
-
-# Restart the LLM service
-docker compose start llm-server
-```
-
-Core messaging, presence, and file exchange continue working smoothly; AI proxy endpoints return a bounded `unavailable` error instead of hanging or crashing the server.
+1. In another terminal, stop the LLM container:
+   ```bash
+   docker compose stop llm-server
+   ```
+2. In the Web UI, continue sending messages, creating groups, and exchanging files — all normal chat functions continue without disruption.
+3. Click **✨ Smart Reply** or **📝 Summarize** in the Web UI: the UI shows a clean, bounded notice that AI assistance is temporarily unavailable, without crashing or freezing.
+4. Restart the LLM container:
+   ```bash
+   docker compose start llm-server
+   ```
+   AI features immediately resume functioning.
 
 ---
 
