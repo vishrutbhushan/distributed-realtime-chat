@@ -6,7 +6,7 @@ A distributed real-time chat and collaboration platform designed to demonstrate:
 - **1-on-1 Direct Messaging & Group Chat with Admin controls**
 - **PDF & Image file exchange**
 - **Local CPU-optimized LLM assistance (Smart Replies & Summarization over full history)**
-- **Modern Responsive Web UI & Automated Verification Suite**
+- **Modern Responsive Web UI & Build-Time Self-Tests**
 - **Docker-only containerized architecture with build-time static verification**
 - **Architectural readiness for Raft consensus (Milestone 2)**
 
@@ -34,13 +34,6 @@ Once running:
 - Open **[http://localhost:8000](http://localhost:8000)** in your browser to sign up and chat.
 - Live logs stream in the console.
 - Press **`Ctrl+C`** to gracefully shut down the cluster and clean up volumes.
-
-### Optional: Manual Verification Test
-If you want to run the automated 14-point test suite explicitly:
-```bash
-docker compose --profile test run --rm client-runner
-```
-
 ---
 
 ## 2. Milestone 1 Key Requirements & Implementation
@@ -116,7 +109,7 @@ distributed-realtime-chat/
 │   ├── Dockerfile.app      # App Node image (build-time static tests + proto compilation)
 │   └── Dockerfile.llm      # LLM Server image (build-time static tests + proto compilation)
 │
-├── docker-compose.yml      # Cluster deployment (App, LLM, Client Runner)
+├── docker-compose.yml      # Cluster deployment (App Node :50051/:8000, LLM Server :50060)
 └── docs/
     ├── ARCHITECTURE.md     # In-depth architectural blueprint
     ├── WALKTHROUGH.md      # Detailed verification run walkthrough
@@ -144,7 +137,9 @@ distributed-realtime-chat/
 
 ---
 
-## 5. Testing and Verification Strategy
+## 5. Build-Time Static Self-Tests
 
-- **Build-time Static Tests**: During `docker compose build`, unit tests (`tests/test_managers.py` and `tests/test_llm_inference.py`) run inside the Docker container build steps. If any test fails, the Docker image build aborts immediately.
-- **Runtime Integration Tests**: `docker compose up --abort-on-container-exit` executes `client/demo.py`, verifying all 14 end-to-end distributed chat behaviors over actual gRPC network calls.
+Only static tests run at Docker build time to guarantee system correctness without running runtime test scripts:
+- **`tests/test_managers.py`**: Validates user signup restrictions, session TTL, DM messaging, group creation with admin controls, file upload/download, and concurrent retry idempotency.
+- **`tests/test_llm_inference.py`**: Validates chat context bounding, prompt construction, and graceful fallback.
+- Executed during `docker compose build` in both `Dockerfile.app` and `Dockerfile.llm`. If any test fails, the image build aborts immediately.

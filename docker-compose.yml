@@ -63,23 +63,6 @@ services:
       retries: 10
       start_period: 15s
 
-  # ── Client Runner (Automated Milestone 1 Verification Suite) ───────────────
-  client-runner:
-    profiles: ["test"]
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.app
-    container_name: client-runner
-    environment:
-      APP_SERVER: "app-node-1:50051"
-    command: ["python", "client/client.py", "--server", "app-node-1:50051", "--demo"]
-    depends_on:
-      app-node-1:
-        condition: service_healthy
-    networks:
-      - chat-net
-    restart: "no"   # run once then exit
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Milestone 2 additions (copy-paste and uncomment for 5-node Raft cluster):
 #
