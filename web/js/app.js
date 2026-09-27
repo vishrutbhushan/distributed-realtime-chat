@@ -277,8 +277,8 @@ function updateChatHeader() {
     sub.innerText = `Group · ${currentChat.member_count || 1} members · You are ${currentChat.role}`;
     dot.style.display = "none";
     const isAdmin = currentChat.role === "ADMIN";
-    if (manageBtn) manageBtn.style.display = isAdmin ? "block" : "none";
-    if (addMemberBtn) addMemberBtn.style.display = isAdmin ? "block" : "none";
+    if (manageBtn) manageBtn.style.display = isAdmin ? "inline-flex" : "none";
+    if (addMemberBtn) addMemberBtn.style.display = "none";
   }
   renderUsersList(cachedUsers);
   renderGroupsList(cachedGroups);
@@ -607,14 +607,19 @@ async function openManageGroupModal() {
       data.members.forEach(m => {
         memberIds.add(m.user_id);
         const div = document.createElement("div");
-        div.className = "user-select-item";
+        div.className = "member-item-row";
         const isAdmin = m.role === "ADMIN";
         const isMe = m.user_id === currentUser.user_id;
 
         div.innerHTML = `
-          <span style="flex: 1;">${escapeHtml(m.username)} <span style="font-size: 10px; color: var(--text-muted);">[${m.role}]</span></span>
-          ${!isAdmin ? `<button class="btn-small" onclick="groupAction('MAKE_ADMIN', '${m.user_id}')">Make Admin</button>` : ''}
-          ${!isMe ? `<button class="btn-small" style="color: var(--danger);" onclick="groupAction('REMOVE_MEMBER', '${m.user_id}')">Remove</button>` : ''}
+          <div style="display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;">
+            <span style="font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(m.username)}</span>
+            <span class="role-badge ${isAdmin ? 'admin' : ''}">${m.role}</span>
+          </div>
+          <div style="display: flex; gap: 4px; flex-shrink: 0;">
+            ${!isAdmin ? `<button class="btn-action-xs" onclick="groupAction('MAKE_ADMIN', '${m.user_id}')">Admin</button>` : ''}
+            ${!isMe ? `<button class="btn-action-xs danger" onclick="groupAction('REMOVE_MEMBER', '${m.user_id}')">Remove</button>` : ''}
+          </div>
         `;
         list.appendChild(div);
       });

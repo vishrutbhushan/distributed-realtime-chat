@@ -72,11 +72,10 @@
           </div>
         </div>
         <div class="header-actions" id="chat-actions" style="display: none;">
-          <button class="btn-action ai" id="btn-smart-reply" onclick="requestSmartReplies()">💡 Smart Replies</button>
-          <button class="btn-action ai" id="btn-suggest" onclick="requestSuggestion()">🎯 Suggest</button>
-          <button class="btn-action ai" onclick="requestSummarize()">📝 Summarize</button>
-          <button class="btn-action" id="btn-add-member" style="display: none;" onclick="openManageGroupModal()">+ Add Member</button>
-          <button class="btn-action" id="btn-manage-group" style="display: none;" onclick="openManageGroupModal()">⚙️ Manage</button>
+          <button class="btn-action ai" id="btn-smart-reply" onclick="requestSmartReplies()" title="Smart quick replies">💡 <span class="btn-text">Replies</span></button>
+          <button class="btn-action ai" id="btn-suggest" onclick="requestSuggestion()" title="Context-aware suggestion">🎯 <span class="btn-text">Suggest</span></button>
+          <button class="btn-action ai" onclick="requestSummarize()" title="Conversation summary">📝 <span class="btn-text">Summary</span></button>
+          <button class="btn-action" id="btn-manage-group" style="display: none;" onclick="openManageGroupModal()" title="Manage group members and settings">⚙️ <span class="btn-text">Manage</span></button>
         </div>
       </div>
 
@@ -108,18 +107,18 @@
   <div class="modal-overlay" id="create-group-modal">
     <div class="modal-card">
       <div class="modal-header">
-        <span>Create New Group</span>
+        <span>➕ Create New Group</span>
         <button class="modal-close" onclick="closeModal('create-group-modal')">✕</button>
       </div>
-      <div class="form-group">
+      <div class="form-group" style="margin-bottom: 8px;">
         <label>Group Name</label>
-        <input type="text" id="new-group-name" placeholder="e.g. Distributed Team">
+        <input type="text" id="new-group-name" placeholder="e.g. Distributed Team" style="padding: 6px 10px; font-size: 13px;">
       </div>
-      <div class="form-group">
+      <div class="form-group" style="margin-bottom: 12px;">
         <label>Select Members</label>
-        <div class="user-select-list" id="create-group-user-list"></div>
+        <div class="user-select-list" id="create-group-user-list" style="max-height: 110px; margin-bottom: 0;"></div>
       </div>
-      <button class="btn" onclick="submitCreateGroup()">Create Group</button>
+      <button class="btn" style="padding: 9px; font-size: 13px;" onclick="submitCreateGroup()">Create Group</button>
     </div>
   </div>
 
@@ -127,27 +126,28 @@
   <div class="modal-overlay" id="manage-group-modal">
     <div class="modal-card">
       <div class="modal-header">
-        <span>Manage Group</span>
+        <span>⚙️ Manage Group</span>
         <button class="modal-close" onclick="closeModal('manage-group-modal')">✕</button>
       </div>
-      <div class="form-group">
+      <div class="form-group" style="margin-bottom: 8px;">
         <label>Rename Group</label>
-        <div style="display: flex; gap: 8px;">
-          <input type="text" id="rename-group-name">
+        <div style="display: flex; gap: 6px;">
+          <input type="text" id="rename-group-name" style="padding: 6px 10px; font-size: 13px;">
           <button class="btn-small" onclick="submitRenameGroup()">Save</button>
         </div>
       </div>
-      <div class="form-group">
+      <div class="form-group" style="margin-bottom: 8px;">
         <label>Group Members</label>
-        <div class="user-select-list" id="manage-members-list"></div>
+        <div class="user-select-list" id="manage-members-list" style="max-height: 100px; margin-bottom: 0;"></div>
       </div>
-      <div class="form-group">
+      <div class="form-group" style="margin-bottom: 12px;">
         <label>Add New Member</label>
-        <div style="display: flex; gap: 8px;">
-          <select id="add-member-select" style="flex: 1; padding: 8px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);"></select>
+        <div style="display: flex; gap: 6px;">
+          <select id="add-member-select" style="flex: 1; padding: 6px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px;"></select>
           <button class="btn-small" onclick="submitAddMember()">Add</button>
         </div>
       </div>
+      <button class="btn" style="padding: 8px; font-size: 13px; background: rgba(255,255,255,0.08);" onclick="closeModal('manage-group-modal')">Done</button>
     </div>
   </div>
 
@@ -155,11 +155,11 @@
   <div class="modal-overlay" id="summary-modal">
     <div class="modal-card">
       <div class="modal-header">
-        <span>Conversation Summary (LLM)</span>
+        <span>📝 Conversation Summary (LLM)</span>
         <button class="modal-close" onclick="closeModal('summary-modal')">✕</button>
       </div>
       <div class="summary-content" id="summary-text">Generating summary...</div>
-      <button class="btn" onclick="closeModal('summary-modal')">Close</button>
+      <button class="btn" style="padding: 8px; font-size: 13px;" onclick="closeModal('summary-modal')">Close</button>
     </div>
   </div>
 
@@ -167,11 +167,11 @@
   <div class="modal-overlay" id="suggestion-modal">
     <div class="modal-card">
       <div class="modal-header">
-        <span>Context-Aware Suggestions (LLM)</span>
+        <span>🎯 Context-Aware Suggestions (LLM)</span>
         <button class="modal-close" onclick="closeModal('suggestion-modal')">✕</button>
       </div>
       <div class="summary-content" id="suggestion-text">Generating suggestion...</div>
-      <button class="btn" onclick="closeModal('suggestion-modal')">Close</button>
+      <button class="btn" style="padding: 8px; font-size: 13px;" onclick="closeModal('suggestion-modal')">Close</button>
     </div>
   </div>
 
