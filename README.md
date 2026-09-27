@@ -1,151 +1,54 @@
-# Distributed Real-time Chat and Collaboration Tool
+# Distributed Real-Time Chat & Collaboration
 
-A distributed real-time chat and collaboration platform designed to demonstrate:
-- **gRPC-based inter-service communication**
-- **Replicated application state and reliable delivery**
-- **1-on-1 Direct Messaging & Group Chat with Admin controls**
-- **PDF & Image file exchange**
-- **Local CPU-optimized LLM assistance (Smart Replies & Summarization over full history)**
-- **Modern Responsive Web UI & Build-Time Self-Tests**
-- **Docker-only containerized architecture with build-time static verification**
+A lightweight, containerized real-time chat platform powered by **gRPC microservices** and an **on-device local LLM** for intelligent summaries and smart replies.
 
 ---
 
 ## 1. Quick Start
 
-### Starting and Stopping the Application
-Two dedicated scripts are provided for each platform: **start** (launches the stack, runs static tests, streams logs to console and `logs/app.log`) and **stop** (cleanly tears down all containers, volumes, and background processes).
+Run the appropriate script to start or stop the full stack:
 
-| Operating System | Start Command | Stop Command |
+| OS | Start | Stop |
 |---|---|---|
 | **Windows (CMD)** | `.\scripts\start.bat` | `.\scripts\stop.bat` |
 | **Windows (PowerShell)** | `.\scripts\start.ps1` | `.\scripts\stop.ps1` |
-| **macOS (MacBook)** | `bash scripts/start.sh` | `bash scripts/stop.sh` |
-| **Linux** | `bash scripts/start.sh` | `bash scripts/stop.sh` |
+| **macOS / Linux** | `bash scripts/start.sh` | `bash scripts/stop.sh` |
 
-#### Logging (`logs/app.log`)
-- On every start, `logs/app.log` is **cleared and re-initialized** automatically.
-- All service logs from both the application node and the LLM engine are streamed live to the console and appended to `logs/app.log`.
-
-#### Hardware Acceleration (GPU / Apple Silicon / CPU)
-The LLM inference engine automatically detects and utilizes available hardware:
-- **NVIDIA GPUs (CUDA)**: Auto-detected; offloads model layers to VRAM.
-- **Apple Silicon (MacBook M1/M2/M3/M4)**: Auto-detected; leverages Metal acceleration.
-- **CPU Fallback**: If no GPU is present or GPU memory is exhausted, it seamlessly falls back to CPU inference.
-- Manual override: Set `MODEL_N_GPU_LAYERS=0` for CPU or `-1` for full GPU offload in `docker-compose.yml`.
-
-#### Graceful Teardown (No Lingering Servers)
-- Open **[http://localhost:8000](http://localhost:8000)** in your browser to sign up and chat.
-- Press **`Ctrl+C`** in the start window or run the corresponding `stop` script from another window: all containers and volumes are cleanly dismantled with `docker compose down -v --remove-orphans`, leaving **zero lingering servers or background tasks**.
----
-
-## 2. Key Requirements & Implementation
-
-| # | Requirement | Implementation Details |
-|---|-------------|------------------------|
-| **1** | **Zero default channels & users** | Database starts completely empty (`/data/chat.db`). Users must sign up. |
-| **2** | **Web UI for all users** | Embedded HTTP Gateway on port 8000 serving clean modular HTML/CSS/JS and translating REST calls into gRPC. |
-| **3** | **Signup & Login restrictions** | Username: 3–20 alphanumeric chars/underscores (`^[a-zA-Z0-9_]{3,20}$`). Password: minimum 4 chars. |
-| **4** | **Active / Inactive Status** | Status is set to `active` upon signup/login, and `inactive` upon logout. Tracked in `users` table and refreshed via heartbeat. |
-| **5** | **1-on-1 Direct Messaging** | `SendDirectMessage` and `GetDirectMessages` RPCs. Messages indexed by `(sender_id, recipient_id, timestamp)`. Idempotency via `client_request_id`. |
-| **6** | **PDF & Image File Sharing** | `UploadFile` and `DownloadFile` RPCs. Binary stored in `/data/files/`, metadata in SQLite `files` table. Inline rendering for images, downloadable card for PDFs. |
-| **7** | **Group Creation with User Checklist** | `CreateGroup` accepts a name and checklist of initial member user IDs during creation. Creator is `ADMIN` by default; members immediately see the group. |
-| **8** | **Admin-only Group Controls** | `UpdateGroup` enforces that only group `ADMIN` can rename group, add members, remove members, or promote members to admin. Non-admin attempts return `Permission Denied`. |
-| **9** | **Standalone LLM Instance** | Dedicated container (`llm-server`) listening on gRPC port `50060`. CPU-optimized mock active; Llama.cpp, Transformers, and Ollama backends ready to uncomment. |
-| **10** | **LLM Features** | a) Smart Replies (generates 3 concise suggestions). b) Summarize (generates bullet-point digest). |
-| **11** | **Pass Full Chat History** | App node passes the entire conversation history to the LLM server for context-aware generation. |
-| **12** | **UI Options** | Web UI provides dedicated buttons for "Smart Replies" (clickable pills) and "Summarize" (modal summary). |
-| **13** | **Proper Database Schema** | Clean SQLite tables: `users`, `sessions`, `groups`, `group_members`, `messages`, `files`. |
-| **14** | **gRPC Inter-service Architecture** | gRPC exclusively used for all client-to-app and app-to-LLM communication. |
+- **Web App**: Open [http://localhost:8000](http://localhost:8000) to sign up and start chatting.
+- **Logs**: Streamed live in your console and saved to `logs/app.log`.
+- **Teardown**: Press `Ctrl+C` or run the stop script to cleanly remove all containers and volumes with zero lingering background processes.
 
 ---
 
-## 3. Project Structure
+## 2. Core Features
 
-```
-distributed-realtime-chat/
-├── proto/                  # Protocol buffer definitions
-│   ├── chat.proto          # Client ↔ App Node RPCs
-│   └── llm.proto           # App Node ↔ LLM Server RPCs
-│
-├── app/                    # Monolithic Application Node
-│   ├── server.py           # Application entrypoint & runtime orchestrator
-│   ├── grpc_server.py      # Core gRPC ChatServicer implementation
-│   ├── web_gateway.py      # HTTP REST Web Gateway translating HTTP to gRPC
-│   ├── auth/manager.py     # Signup, login, logout, token session, active/inactive
-│   ├── chat/manager.py     # DMs, groups, memberships, real-time queues
-│   ├── presence/manager.py # Background idle sweeper
-│   └── files/manager.py    # Binary file store + SQLite metadata
-│
-├── web/                    # Modular Single-Page Web Application
-│   ├── index.html          # Semantic HTML structure
-│   ├── css/
-│   │   └── style.css       # Clean stylesheet (layout, modals, typography)
-│   └── js/
-│       ├── api.js          # REST client communicating with Web Gateway
-│       └── app.js          # State management, DOM events, and UI rendering
-│
-├── llm/                    # Standalone LLM Server
-│   ├── server.py           # gRPC LLMService implementation (:50060)
-│   ├── inference.py        # CPU inference engine (mock + real model backends)
-│   └── prompts.py          # Prompt formatting templates
-│
-├── storage/                # Persistence Layer
-│   └── database.py         # Thread-safe SQLite with WAL & concurrency lock
-│
-├── client/                 # Python CLI Client
-│   ├── client.py           # CLI entrypoint & argument parser
-│   └── repl.py             # Interactive terminal chat REPL
-│
-├── tests/                  # Static Unit Tests (run at docker build time)
-│   ├── test_managers.py    # Tests for auth, chat, idempotency, groups, files
-│   └── test_llm_inference.py # Tests for prompt construction & context bounding
-│
-├── docker/
-│   ├── Dockerfile.app      # App Node image (build-time static tests + proto compilation)
-│   └── Dockerfile.llm      # LLM Server image (build-time static tests + proto compilation)
-│
-├── docker-compose.yml      # Cluster deployment (App Node :50051/:8000, LLM Server :50060)
-└── scripts/
-    ├── start.bat           # Windows CMD launcher (clears logs, starts cluster)
-    ├── stop.bat            # Windows CMD teardown (cleans containers & volumes)
-    ├── start.ps1           # PowerShell launcher (clears logs, starts cluster)
-    ├── stop.ps1            # PowerShell teardown (cleans containers & volumes)
-    ├── start.sh            # Linux/macOS launcher (clears logs, starts cluster)
-    └── stop.sh             # Linux/macOS teardown (cleans containers & volumes)
-```
+- **Direct & Group Chats**: Real-time 1-on-1 direct messaging and multi-user group chats.
+- **Admin Group Controls**: Group creators are admins who can add/remove members, rename the group, or promote others.
+- **File Sharing**: Send images (rendered directly in chat) and PDFs (available with one-click download).
+- **Presence Indicators**: Live active/inactive status and last-seen timestamps for all users.
+- **Local AI Assistance**:
+  - **Smart Replies**: Contextual, one-click reply suggestions for the active conversation.
+  - **Chat Summaries**: Informative, grounded summaries personalized to the user ("You") without data leaving your machine.
+- **Real-Time Sync**: Efficient Server-Sent Events (SSE) push updates instantly without idle polling.
 
 ---
 
-## 4. Web UI Features (`http://localhost:8000`)
+## 3. Architecture
 
-1. **Authentication**: Switch between Log In and Sign Up tabs.
-2. **Directory**: Real-time listing of all other users with active (green) and inactive (gray) indicators and last-seen timestamps.
-3. **1-on-1 Direct Messaging**: Click any user to start a DM session.
-4. **Group Collaboration**:
-   - Create new groups with custom name and user checklist.
-   - Creator is `ADMIN` by default; members immediately see the group.
-   - Admin settings modal: Rename group, add member, remove member, make another user admin.
-5. **File Exchange**:
-   - Attach PDF or Image files using the paperclip button.
-   - Images are rendered directly inside chat bubbles.
-   - PDFs display as file cards with instant download buttons.
-6. **AI Tools**:
-   - **Smart Replies**: Suggests 3 one-click replies based on the entire chat history.
-   - **Summarize**: Generates an intelligent summary modal of the whole discussion.
-
-### Live updates
-
-Each signed-in browser tab opens one authenticated `GET /api/events` Server-Sent Events connection. The Python web gateway adapts the existing `StreamMessages` gRPC stream to the browser; Python service-to-service communication remains gRPC, and the protobuf definitions are unchanged. Browser tabs load directory and selected-chat snapshots when the stream connects or reconnects, and reload after an explicit resynchronization event. They do not repeatedly poll users, groups, or history while idle.
-
-The application keeps browser streams on an internal loopback-only gRPC listener (`50052`) with a separate pool capped at 32 streams. That listener is not published to the host. Unary gRPC calls continue to use the existing `50051` listener and its worker pool.
+- **App Node (`app-node-1`)**: Handles authentication, chat logic, presence, and file storage via thread-safe SQLite (`WAL` mode). Includes an HTTP gateway on port `8000` that translates browser requests into internal gRPC calls (`50051`).
+- **LLM Node (`llm-server`)**: Dedicated container on port `50060` running a quantized local model (Qwen 2.5) with automatic GPU / Metal acceleration and CPU fallback.
+- **Inter-Service Communication**: Pure gRPC with Protobuf definitions (`chat.proto` and `llm.proto`).
 
 ---
 
-## 5. Build-Time Static Self-Tests
+## 4. Project Layout
 
-Only static tests run at Docker build time to guarantee system correctness without running runtime test scripts:
-- **`tests/test_managers.py`**: Validates user signup restrictions, session TTL, DM messaging, group creation with admin controls, file upload/download, and concurrent retry idempotency.
-- **`tests/test_llm_inference.py`**: Validates chat context bounding, prompt construction, and graceful fallback.
-- **`tests/test_realtime_events.py`**: Validates message event delivery, stream cleanup, expired sessions, bounded-queue resynchronization, group-access revocation, and multi-session presence.
-- Executed during `docker compose build` in both `Dockerfile.app` and `Dockerfile.llm`. If any test fails, the image build aborts immediately.
+```text
+├── app/          # Core chat service, auth, presence, file manager & HTTP gateway
+├── llm/          # Local inference engine, prompt templates & gRPC server
+├── web/          # Responsive Single-Page Application (HTML / Vanilla CSS / JS)
+├── proto/        # gRPC Protobuf definitions (chat.proto, llm.proto)
+├── tests/        # Unit & static integration test suites
+├── docker/       # Dockerfiles for app and LLM services
+├── scripts/      # Cross-platform start and stop scripts
+└── docker-compose.yml
