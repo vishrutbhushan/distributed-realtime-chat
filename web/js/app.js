@@ -96,10 +96,13 @@ async function loadDirectory(background = false) {
       cachedUsers = uResp.users;
       if (currentChat && currentChat.type === "DM") {
         const u = cachedUsers.find(x => x.user_id === currentChat.id);
-        if (u && u.status !== currentChat.status) {
-          currentChat.status = u.status;
-          sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
-          updateChatHeader();
+        if (u) {
+          u.unread_count = 0;
+          if (u.status !== currentChat.status) {
+            currentChat.status = u.status;
+            sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+            updateChatHeader();
+          }
         }
       }
       renderUsersList(cachedUsers);
@@ -108,12 +111,15 @@ async function loadDirectory(background = false) {
       cachedGroups = gResp.groups;
       if (currentChat && currentChat.type === "GROUP") {
         const g = cachedGroups.find(x => x.group_id === currentChat.id);
-        if (g && (g.name !== currentChat.name || g.member_count !== currentChat.member_count || g.user_role !== currentChat.role)) {
-          currentChat.name = g.name;
-          currentChat.member_count = g.member_count;
-          currentChat.role = g.user_role;
-          sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
-          updateChatHeader();
+        if (g) {
+          g.unread_count = 0;
+          if (g.name !== currentChat.name || g.member_count !== currentChat.member_count || g.user_role !== currentChat.role) {
+            currentChat.name = g.name;
+            currentChat.member_count = g.member_count;
+            currentChat.role = g.user_role;
+            sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+            updateChatHeader();
+          }
         }
       }
       renderGroupsList(cachedGroups);
@@ -130,14 +136,36 @@ function renderUsersList(users) {
     list.innerHTML = `<li style="font-size: 12px; color: var(--text-muted); padding: 8px;">No other users registered.</li>`;
     return;
   }
-  users.forEach(u => {
+
+  // Sort users in real-time: Most recently active chat moves to the top
+  const sortedUsers = [...users].sort((a, b) => {
+    const timeA = a.last_message_time || 0;
+    const timeB = b.last_message_time || 0;
+    if (timeB !== timeA) return timeB - timeA;
+    if (a.status === "active" && b.status !== "active") return -1;
+    if (b.status === "active" && a.status !== "active") return 1;
+    return a.username.localeCompare(b.username);
+  });
+
+  sortedUsers.forEach(u => {
+    const isSelected = currentChat && currentChat.type === "DM" && currentChat.id === u.user_id;
+    const unread = isSelected ? 0 : (u.unread_count || 0);
+
     const li = document.createElement("li");
-    li.className = "item" + (currentChat && currentChat.type === "DM" && currentChat.id === u.user_id ? " selected" : "");
+    li.className = "item" + (isSelected ? " selected" : "");
     li.onclick = () => selectDM(u);
     li.innerHTML = `
       <div class="status-dot ${u.status === 'active' ? 'active' : ''}"></div>
-      <span class="item-name">${escapeHtml(u.username)}</span>
-      <span class="item-badge">${u.status}</span>
+      <div class="item-info">
+        <div class="item-header-row">
+          <span class="item-name">${escapeHtml(u.username)}</span>
+          ${unread > 0 
+            ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>`
+            : `<span class="item-badge">${u.status}</span>`
+          }
+        </div>
+        ${u.last_message ? `<div class="item-preview">${escapeHtml(u.last_message)}</div>` : ''}
+      </div>
     `;
     list.appendChild(li);
   });
@@ -150,14 +178,34 @@ function renderGroupsList(groups) {
     list.innerHTML = `<li style="font-size: 12px; color: var(--text-muted); padding: 8px;">No groups yet.</li>`;
     return;
   }
-  groups.forEach(g => {
+
+  // Sort groups in real-time: Most recently active group moves to the top
+  const sortedGroups = [...groups].sort((a, b) => {
+    const timeA = a.last_message_time || (a.created_at * 1000) || 0;
+    const timeB = b.last_message_time || (b.created_at * 1000) || 0;
+    if (timeB !== timeA) return timeB - timeA;
+    return a.name.localeCompare(b.name);
+  });
+
+  sortedGroups.forEach(g => {
+    const isSelected = currentChat && currentChat.type === "GROUP" && currentChat.id === g.group_id;
+    const unread = isSelected ? 0 : (g.unread_count || 0);
+
     const li = document.createElement("li");
-    li.className = "item" + (currentChat && currentChat.type === "GROUP" && currentChat.id === g.group_id ? " selected" : "");
+    li.className = "item" + (isSelected ? " selected" : "");
     li.onclick = () => selectGroup(g);
     li.innerHTML = `
       <span style="color: var(--primary); font-weight: bold;">#</span>
-      <span class="item-name">${escapeHtml(g.name)}</span>
-      <span class="item-badge">${g.member_count} members</span>
+      <div class="item-info">
+        <div class="item-header-row">
+          <span class="item-name">${escapeHtml(g.name)}</span>
+          ${unread > 0 
+            ? `<span class="unread-badge">${unread > 99 ? '99+' : unread}</span>`
+            : `<span class="item-badge">${g.member_count} mem</span>`
+          }
+        </div>
+        ${g.last_message ? `<div class="item-preview">${escapeHtml(g.last_message)}</div>` : ''}
+      </div>
     `;
     list.appendChild(li);
   });
@@ -169,6 +217,17 @@ function selectDM(u) {
   if (bar) bar.style.display = "none";
   currentChat = { type: "DM", id: u.user_id, name: u.username, status: u.status };
   sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+
+  // Instantly clear unread count locally for instant UI update
+  u.unread_count = 0;
+  const match = cachedUsers.find(x => x.user_id === u.user_id);
+  if (match) match.unread_count = 0;
+  renderUsersList(cachedUsers);
+
+  if (currentUser) {
+    api.markRead(currentUser.token, "DM", u.user_id).catch(() => {});
+  }
+
   updateChatHeader();
   loadMessages();
 }
@@ -179,6 +238,17 @@ function selectGroup(g) {
   if (bar) bar.style.display = "none";
   currentChat = { type: "GROUP", id: g.group_id, name: g.name, role: g.user_role, member_count: g.member_count };
   sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+
+  // Instantly clear unread count locally for instant UI update
+  g.unread_count = 0;
+  const match = cachedGroups.find(x => x.group_id === g.group_id);
+  if (match) match.unread_count = 0;
+  renderGroupsList(cachedGroups);
+
+  if (currentUser) {
+    api.markRead(currentUser.token, "GROUP", g.group_id).catch(() => {});
+  }
+
   updateChatHeader();
   loadMessages();
 }
@@ -226,6 +296,27 @@ async function loadMessages(background = false) {
       currentMessages = data.messages || [];
       if (!background || currentMessages.length !== oldLen) {
         renderMessages(currentMessages);
+      }
+
+      if (currentMessages.length > 0) {
+        const latest = currentMessages[currentMessages.length - 1];
+        if (currentChat.type === "DM") {
+          const u = cachedUsers.find(x => x.user_id === currentChat.id);
+          if (u && (u.last_message_time !== latest.timestamp || u.unread_count !== 0)) {
+            u.last_message_time = latest.timestamp;
+            u.last_message = latest.content || (latest.file_id ? '[File Attachment]' : '');
+            u.unread_count = 0;
+            renderUsersList(cachedUsers);
+          }
+        } else {
+          const g = cachedGroups.find(x => x.group_id === currentChat.id);
+          if (g && (g.last_message_time !== latest.timestamp || g.unread_count !== 0)) {
+            g.last_message_time = latest.timestamp;
+            g.last_message = latest.content || (latest.file_id ? '[File Attachment]' : '');
+            g.unread_count = 0;
+            renderGroupsList(cachedGroups);
+          }
+        }
       }
 
       // Automatically display smart replies always when the last message is not from currentUser
@@ -347,6 +438,27 @@ async function sendMessage() {
       lastSmartReplyMsgId = null;
       const bar = document.getElementById("smart-replies-bar");
       if (bar) bar.style.display = "none";
+
+      const now = Date.now();
+      const previewText = content || (fileId ? '[File Attachment]' : '');
+      if (currentChat.type === "DM") {
+        const u = cachedUsers.find(x => x.user_id === currentChat.id);
+        if (u) {
+          u.last_message_time = now;
+          u.last_message = previewText;
+          u.unread_count = 0;
+          renderUsersList(cachedUsers);
+        }
+      } else {
+        const g = cachedGroups.find(x => x.group_id === currentChat.id);
+        if (g) {
+          g.last_message_time = now;
+          g.last_message = previewText;
+          g.unread_count = 0;
+          renderGroupsList(cachedGroups);
+        }
+      }
+
       loadMessages();
     } else {
       alert(data.error || "Failed to send message");
@@ -408,6 +520,26 @@ async function requestSummarize() {
     document.getElementById("summary-text").innerText = data.summary || "No summary available.";
   } catch (e) {
     document.getElementById("summary-text").innerText = "Error requesting summary: " + e.message;
+  }
+}
+
+async function requestSuggestion() {
+  if (!currentChat || !currentUser) return;
+  openModal("suggestion-modal");
+  document.getElementById("suggestion-text").innerText = "Generating context-aware suggestion from conversation history...";
+
+  const historyStrings = currentMessages.map(m => `${m.sender_username}: ${m.content}`);
+  try {
+    const data = await api.suggest(
+      currentUser.token,
+      currentChat.type,
+      currentChat.id,
+      historyStrings,
+      currentChat.name
+    );
+    document.getElementById("suggestion-text").innerText = data.suggestion || "No suggestion available.";
+  } catch (e) {
+    document.getElementById("suggestion-text").innerText = "Error requesting suggestion: " + e.message;
   }
 }
 

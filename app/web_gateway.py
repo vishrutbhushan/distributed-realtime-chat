@@ -87,7 +87,15 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             try:
                 resp = self.grpc_stub.ListUsers(chat_pb2.ListUsersRequest(token=token))
                 users = [
-                    {"user_id": u.user_id, "username": u.username, "status": u.status, "last_seen": u.last_seen}
+                    {
+                        "user_id": u.user_id,
+                        "username": u.username,
+                        "status": u.status,
+                        "last_seen": u.last_seen,
+                        "last_message_time": u.last_message_time,
+                        "unread_count": u.unread_count,
+                        "last_message": u.last_message,
+                    }
                     for u in resp.users
                 ]
                 self._send_json(200, {"success": True, "users": users})
@@ -108,6 +116,9 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                         "created_at": g.created_at,
                         "member_count": g.member_count,
                         "user_role": g.user_role,
+                        "last_message_time": g.last_message_time,
+                        "unread_count": g.unread_count,
+                        "last_message": g.last_message,
                     }
                     for g in resp.groups
                 ]
@@ -280,6 +291,22 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"success": False, "error": e.details()})
             return
 
+        # POST /api/chat/read or /api/messages/read
+        if path in ("/api/chat/read", "/api/messages/read"):
+            data = self._read_json()
+            try:
+                resp = self.grpc_stub.MarkRead(
+                    chat_pb2.MarkReadRequest(
+                        token=data.get("token", ""),
+                        chat_type=data.get("chat_type", "DM"),
+                        target_id=data.get("target_id", ""),
+                    )
+                )
+                self._send_json(200, {"success": resp.success})
+            except grpc.RpcError as e:
+                self._send_json(400, {"success": False, "error": e.details()})
+            return
+
         # POST /api/groups (Create group)
         if path == "/api/groups":
             data = self._read_json()
@@ -443,6 +470,26 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {
                     "success": resp.success,
                     "summary": resp.summary,
+                    "error": resp.error,
+                })
+            except grpc.RpcError as e:
+                self._send_json(400, {"success": False, "error": e.details()})
+            return
+
+        # POST /api/llm/suggest
+        if path == "/api/llm/suggest":
+            data = self._read_json()
+            try:
+                resp = self.grpc_stub.GetContextSuggestion(
+                    chat_pb2.ContextSuggestionRequest(
+                        token=data.get("token", ""),
+                        chat_history=data.get("chat_history", []),
+                        context_title=data.get("context_title", "Chat"),
+                    )
+                )
+                self._send_json(200, {
+                    "success": resp.success,
+                    "suggestion": resp.suggestion,
                     "error": resp.error,
                 })
             except grpc.RpcError as e:

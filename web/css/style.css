@@ -203,27 +203,78 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  border-radius: 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
   cursor: pointer;
   margin-bottom: 4px;
-  transition: background 0.15s;
+  transition: all 0.2s ease;
+  position: relative;
 }
 .item:hover { background: rgba(255, 255, 255, 0.05); }
-.item.selected { background: rgba(59, 130, 246, 0.15); color: #bfdbfe; }
-.item-name {
+.item.selected { background: rgba(59, 130, 246, 0.16); color: #bfdbfe; }
+.item-info {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.item-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.item-name {
   font-size: 14px;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.item-preview {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 190px;
+}
 .item-badge {
   font-size: 10px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
   padding: 2px 6px;
   border-radius: 10px;
   color: var(--text-muted);
+  flex-shrink: 0;
+}
+.unread-badge {
+  background: #3b82f6;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 20px;
+  height: 20px;
+  line-height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.6);
+  flex-shrink: 0;
+  animation: pulse-badge 2s infinite ease-in-out;
+}
+@keyframes pulse-badge {
+  0%, 100% {
+    box-shadow: 0 0 6px rgba(59, 130, 246, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 12px rgba(59, 130, 246, 0.85);
+    transform: scale(1.06);
+  }
 }
 
 /* Chat Main View */

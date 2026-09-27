@@ -167,4 +167,33 @@ const api = {
     });
     return res.json();
   },
+
+  async suggest(token, chatType, targetId, chatHistory, contextTitle) {
+    const res = await fetch(`${API_BASE}/api/llm/suggest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token,
+        chat_type: chatType,
+        target_id: targetId,
+        chat_history: chatHistory,
+        context_title: contextTitle,
+        request_id: crypto.randomUUID(),
+      }),
+    });
+    return res.json();
+  },
+
+  async markRead(token, chatType, targetId) {
+    const res = await fetch(`${API_BASE}/api/chat/read`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token,
+        chat_type: chatType,
+        target_id: targetId,
+      }),
+    });
+    return res.json();
+  },
 };

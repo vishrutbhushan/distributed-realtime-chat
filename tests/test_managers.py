@@ -185,6 +185,58 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(downloaded_bytes, sample_bytes)
         self.assertEqual(downloaded_meta["filename"], "document.pdf")
 
+    # ── Unread Counts and Ordering Tests ──────────────────────────────────────
+
+    def test_unread_count_and_ordering_metadata(self):
+        _, _, u_a, _, _ = self.auth.signup("user_a", "pass123")
+        _, _, u_b, _, _ = self.auth.signup("user_b", "pass123")
+        _, _, u_c, _, _ = self.auth.signup("user_c", "pass123")
+
+        # Initially, u_a has 0 unread from u_b and u_c
+        meta_a = self.chat.get_dm_metadata_for_user(u_a)
+        self.assertEqual(meta_a[u_b]["unread_count"], 0)
+        self.assertEqual(meta_a[u_c]["unread_count"], 0)
+
+        # u_b sends 2 messages to u_a
+        self.chat.send_dm(u_b, u_a, "Hey A from B 1")
+        self.chat.send_dm(u_b, u_a, "Hey A from B 2")
+
+        import time as _t
+        _t.sleep(0.01)
+
+        meta_a = self.chat.get_dm_metadata_for_user(u_a)
+        self.assertEqual(meta_a[u_b]["unread_count"], 2)
+        self.assertEqual(meta_a[u_c]["unread_count"], 0)
+        self.assertGreater(meta_a[u_b]["last_message_time"], 0)
+
+        # u_c sends 1 message to u_a
+        self.chat.send_dm(u_c, u_a, "Hey A from C")
+        meta_a = self.chat.get_dm_metadata_for_user(u_a)
+        self.assertEqual(meta_a[u_b]["unread_count"], 2)
+        self.assertEqual(meta_a[u_c]["unread_count"], 1)
+        # u_c texted most recently, so u_c has higher last_message_time than u_b
+        self.assertGreater(meta_a[u_c]["last_message_time"], meta_a[u_b]["last_message_time"])
+
+        # When u_a reads messages from u_b, unread_count resets to 0
+        self.chat.mark_as_read(u_a, "DM", u_b)
+        meta_a = self.chat.get_dm_metadata_for_user(u_a)
+        self.assertEqual(meta_a[u_b]["unread_count"], 0)
+        self.assertEqual(meta_a[u_c]["unread_count"], 1)
+
+        # Test with Group
+        ok, grp, _ = self.chat.create_group("Test Order Group", u_a, [u_b, u_c])
+        grp_id = grp["group_id"]
+
+        # u_b posts in group
+        self.chat.send_group_message(u_b, grp_id, "Hello Group from B")
+        grp_meta_a = self.chat.get_group_metadata_for_user(u_a)
+        self.assertEqual(grp_meta_a[grp_id]["unread_count"], 1)
+
+        # u_a views group history -> mark_as_read called
+        self.chat.get_group_history(grp_id, u_a)
+        grp_meta_a = self.chat.get_group_metadata_for_user(u_a)
+        self.assertEqual(grp_meta_a[grp_id]["unread_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

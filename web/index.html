@@ -73,6 +73,7 @@
         </div>
         <div class="header-actions" id="chat-actions" style="display: none;">
           <button class="btn-action ai" id="btn-smart-reply" onclick="requestSmartReplies()">💡 Smart Replies</button>
+          <button class="btn-action ai" id="btn-suggest" onclick="requestSuggestion()">🎯 Suggest</button>
           <button class="btn-action ai" onclick="requestSummarize()">📝 Summarize</button>
           <button class="btn-action" id="btn-add-member" style="display: none;" onclick="openManageGroupModal()">+ Add Member</button>
           <button class="btn-action" id="btn-manage-group" style="display: none;" onclick="openManageGroupModal()">⚙️ Manage</button>
@@ -159,6 +160,18 @@
       </div>
       <div class="summary-content" id="summary-text">Generating summary...</div>
       <button class="btn" onclick="closeModal('summary-modal')">Close</button>
+    </div>
+  </div>
+
+  <!-- Suggestion Modal -->
+  <div class="modal-overlay" id="suggestion-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span>Context-Aware Suggestions (LLM)</span>
+        <button class="modal-close" onclick="closeModal('suggestion-modal')">✕</button>
+      </div>
+      <div class="summary-content" id="suggestion-text">Generating suggestion...</div>
+      <button class="btn" onclick="closeModal('suggestion-modal')">Close</button>
     </div>
   </div>
 

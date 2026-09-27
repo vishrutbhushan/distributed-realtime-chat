@@ -46,10 +46,13 @@ message LogoutResponse {
 // ─────────────────────────────────────────────────────────────
 
 message UserItem {
-  string user_id   = 1;
-  string username  = 2;
-  string status    = 3; // "active" | "inactive"
-  int64  last_seen = 4;
+  string user_id           = 1;
+  string username          = 2;
+  string status            = 3; // "active" | "inactive"
+  int64  last_seen         = 4;
+  int64  last_message_time = 5;
+  int32  unread_count      = 6;
+  string last_message      = 7;
 }
 
 message ListUsersRequest {
@@ -135,13 +138,16 @@ message GetDirectMessagesRequest {
 // ─────────────────────────────────────────────────────────────
 
 message Group {
-  string group_id        = 1;
-  string name            = 2;
-  string created_by      = 3;
-  string created_by_name = 4;
-  int64  created_at      = 5;
-  int32  member_count    = 6;
-  string user_role       = 7; // "ADMIN" | "MEMBER"
+  string group_id          = 1;
+  string name              = 2;
+  string created_by        = 3;
+  string created_by_name   = 4;
+  int64  created_at        = 5;
+  int32  member_count      = 6;
+  string user_role         = 7; // "ADMIN" | "MEMBER"
+  int64  last_message_time = 8;
+  int32  unread_count      = 9;
+  string last_message      = 10;
 }
 
 message GroupMember {
@@ -304,6 +310,22 @@ message SummarizeChatResponse {
   string error      = 4;
 }
 
+message ContextSuggestionRequest {
+  string          token         = 1;
+  string          chat_type     = 2;
+  string          target_id     = 3;
+  repeated string chat_history  = 4;
+  string          context_title = 5;
+  string          request_id    = 6;
+}
+
+message ContextSuggestionResponse {
+  string request_id = 1;
+  string suggestion = 2;
+  bool   success    = 3;
+  string error      = 4;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Assignment Explicit Required RPC Signatures
 // ─────────────────────────────────────────────────────────────
@@ -362,6 +384,16 @@ message GetNodeStatusResponse {
   int64  last_applied = 6;
 }
 
+message MarkReadRequest {
+  string token     = 1;
+  string chat_type = 2; // "DM" | "GROUP"
+  string target_id = 3; // user_id or group_id
+}
+
+message MarkReadResponse {
+  bool success = 1;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Service Definition
 // ─────────────────────────────────────────────────────────────
@@ -388,6 +420,7 @@ service ChatService {
   rpc GetGroupMembers(GetGroupMembersRequest)       returns (GetGroupMembersResponse);
   rpc SendGroupMessage(SendGroupMessageRequest)     returns (SendMessageResponse);
   rpc GetGroupMessages(GetGroupMessagesRequest)     returns (GetMessagesResponse);
+  rpc MarkRead(MarkReadRequest)                     returns (MarkReadResponse);
 
   // Streaming
   rpc StreamMessages(StreamMessagesRequest)         returns (stream MessageEvent);
@@ -399,6 +432,7 @@ service ChatService {
   // LLM Features
   rpc GetSmartReplies(SmartReplyRequest)           returns (SmartReplyResponse);
   rpc SummarizeChat(SummarizeChatRequest)           returns (SummarizeChatResponse);
+  rpc GetContextSuggestion(ContextSuggestionRequest) returns (ContextSuggestionResponse);
 
   // Assignment Signatures
   rpc Post(PostRequest)                             returns (PostResponse);

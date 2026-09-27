@@ -108,6 +108,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def ListUsers(self, request, context):
         sess = self._require_auth(request.token, context)
         users = self.auth.list_users(exclude_user_id=sess["user_id"])
+        meta = self.chat.get_dm_metadata_for_user(sess["user_id"])
         return chat_pb2.ListUsersResponse(
             users=[
                 chat_pb2.UserItem(
@@ -115,6 +116,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     username=u["username"],
                     status=u["status"],
                     last_seen=u["last_seen"],
+                    last_message_time=meta.get(u["user_id"], {}).get("last_message_time", 0),
+                    unread_count=meta.get(u["user_id"], {}).get("unread_count", 0),
+                    last_message=meta.get(u["user_id"], {}).get("last_message", ""),
                 )
                 for u in users
             ]
@@ -224,6 +228,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def ListGroups(self, request, context):
         sess = self._require_auth(request.token, context)
         groups = self.chat.list_user_groups(sess["user_id"])
+        meta = self.chat.get_group_metadata_for_user(sess["user_id"])
         return chat_pb2.ListGroupsResponse(
             groups=[
                 chat_pb2.Group(
@@ -234,6 +239,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     created_at=g["created_at"],
                     member_count=g.get("member_count", 1),
                     user_role=g.get("user_role", "MEMBER"),
+                    last_message_time=meta.get(g["group_id"], {}).get("last_message_time", 0),
+                    unread_count=meta.get(g["group_id"], {}).get("unread_count", 0),
+                    last_message=meta.get(g["group_id"], {}).get("last_message", ""),
                 )
                 for g in groups
             ]
@@ -286,6 +294,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         return chat_pb2.GetMessagesResponse(
             messages=[self._to_message_proto(m) for m in msgs]
         )
+
+    def MarkRead(self, request, context):
+        sess = self._require_auth(request.token, context)
+        self.chat.mark_as_read(sess["user_id"], request.chat_type, request.target_id)
+        return chat_pb2.MarkReadResponse(success=True)
 
     # ── Server-Streaming Messages ─────────────────────────────────────────────
 
@@ -399,6 +412,35 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         except Exception as exc:
             logger.error("[LLM PROXY] SummarizeChat error: %s", exc)
             return chat_pb2.SummarizeChatResponse(
+                request_id=rid, success=False, error=str(exc)
+            )
+
+    def GetContextSuggestion(self, request, context):
+        sess = self._require_auth(request.token, context)
+        rid = request.request_id or str(uuid.uuid4())
+
+        if not self.llm:
+            return chat_pb2.ContextSuggestionResponse(
+                request_id=rid, success=False, error="LLM service unreachable"
+            )
+        try:
+            resp = self.llm.GetContextSuggestion(
+                llm_pb2.ContextSuggestionRequest(
+                    request_id=rid,
+                    chat_history=list(request.chat_history),
+                    context_title=request.context_title or "Chat",
+                    current_user=sess.get("username", "user"),
+                )
+            )
+            return chat_pb2.ContextSuggestionResponse(
+                request_id=resp.request_id,
+                suggestion=resp.suggestion,
+                success=resp.success,
+                error=resp.error,
+            )
+        except Exception as exc:
+            logger.error("[LLM PROXY] GetContextSuggestion error: %s", exc)
+            return chat_pb2.ContextSuggestionResponse(
                 request_id=rid, success=False, error=str(exc)
             )
 

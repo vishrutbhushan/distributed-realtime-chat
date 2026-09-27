@@ -50,6 +50,140 @@ class ChatManager:
                 except queue.Full:
                     pass
 
+    # ── Read Receipts & Unread Tracking ───────────────────────────────────────
+
+    def mark_as_read(
+        self,
+        user_id: str,
+        chat_type: str,
+        target_id: str,
+        timestamp: Optional[int] = None,
+    ):
+        """Record that user_id has read messages up to timestamp in chat."""
+        if not user_id or not target_id:
+            return
+        ts = timestamp if timestamp is not None else int(time.time() * 1000)
+        with self.db.lock:
+            try:
+                self.db.execute(
+                    """
+                    INSERT INTO chat_reads (user_id, chat_type, target_id, last_read_timestamp)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id, chat_type, target_id)
+                    DO UPDATE SET last_read_timestamp = MAX(chat_reads.last_read_timestamp, excluded.last_read_timestamp)
+                    """,
+                    (user_id, chat_type, target_id, ts),
+                )
+                self.db.commit()
+            except Exception as exc:
+                logger.error("[CHAT] mark_as_read error: %s", exc)
+
+    def get_dm_metadata_for_user(self, user_id: str) -> Dict[str, dict]:
+        """
+        Returns a dict mapping other_user_id -> {
+            "last_message_time": int,
+            "unread_count": int,
+            "last_message": str,
+        }
+        for all other registered users.
+        """
+        metadata = {}
+        with self.db.lock:
+            rows = self.db.fetchall(
+                """
+                SELECT 
+                    u.user_id,
+                    COALESCE(MAX(m.timestamp), 0) AS last_message_time,
+                    (
+                        SELECT CASE 
+                            WHEN m2.file_id IS NOT NULL AND (m2.content IS NULL OR m2.content = '') 
+                            THEN '[File Attachment]' 
+                            ELSE m2.content 
+                        END
+                        FROM messages m2
+                        WHERE m2.chat_type = 'DM' 
+                          AND ((m2.sender_id = ? AND m2.recipient_id = u.user_id) OR (m2.sender_id = u.user_id AND m2.recipient_id = ?))
+                        ORDER BY m2.timestamp DESC LIMIT 1
+                    ) AS last_message,
+                    (
+                        SELECT COUNT(*) FROM messages m3
+                        WHERE m3.chat_type = 'DM'
+                          AND m3.sender_id = u.user_id
+                          AND m3.recipient_id = ?
+                          AND m3.timestamp > COALESCE((
+                              SELECT cr.last_read_timestamp FROM chat_reads cr
+                              WHERE cr.user_id = ? AND cr.chat_type = 'DM' AND cr.target_id = u.user_id
+                          ), 0)
+                    ) AS unread_count
+                FROM users u
+                LEFT JOIN messages m ON m.chat_type = 'DM' AND (
+                    (m.sender_id = ? AND m.recipient_id = u.user_id) OR
+                    (m.sender_id = u.user_id AND m.recipient_id = ?)
+                )
+                WHERE u.user_id != ?
+                GROUP BY u.user_id
+                """,
+                (user_id, user_id, user_id, user_id, user_id, user_id, user_id),
+            )
+            for r in rows:
+                metadata[r["user_id"]] = {
+                    "last_message_time": r["last_message_time"] or 0,
+                    "unread_count": r["unread_count"] or 0,
+                    "last_message": (r["last_message"] or "")[:50],
+                }
+        return metadata
+
+    def get_group_metadata_for_user(self, user_id: str) -> Dict[str, dict]:
+        """
+        Returns a dict mapping group_id -> {
+            "last_message_time": int,
+            "unread_count": int,
+            "last_message": str,
+        }
+        for all groups user_id belongs to.
+        """
+        metadata = {}
+        with self.db.lock:
+            rows = self.db.fetchall(
+                """
+                SELECT 
+                    g.group_id,
+                    COALESCE(MAX(m.timestamp), g.created_at * 1000) AS last_message_time,
+                    (
+                        SELECT CASE 
+                            WHEN m2.file_id IS NOT NULL AND (m2.content IS NULL OR m2.content = '') 
+                            THEN '[File Attachment]' 
+                            ELSE m2.content 
+                        END
+                        FROM messages m2
+                        WHERE m2.chat_type = 'GROUP' AND m2.group_id = g.group_id
+                        ORDER BY m2.timestamp DESC LIMIT 1
+                    ) AS last_message,
+                    (
+                        SELECT COUNT(*) FROM messages m3
+                        WHERE m3.chat_type = 'GROUP'
+                          AND m3.group_id = g.group_id
+                          AND m3.sender_id != ?
+                          AND m3.timestamp > COALESCE((
+                              SELECT cr.last_read_timestamp FROM chat_reads cr
+                              WHERE cr.user_id = ? AND cr.chat_type = 'GROUP' AND cr.target_id = g.group_id
+                          ), 0)
+                    ) AS unread_count
+                FROM groups g
+                JOIN group_members gm ON g.group_id = gm.group_id AND gm.user_id = ?
+                LEFT JOIN messages m ON m.chat_type = 'GROUP' AND m.group_id = g.group_id
+                GROUP BY g.group_id
+                """,
+                (user_id, user_id, user_id),
+            )
+            for r in rows:
+                metadata[r["group_id"]] = {
+                    "last_message_time": r["last_message_time"] or 0,
+                    "unread_count": r["unread_count"] or 0,
+                    "last_message": (r["last_message"] or "")[:50],
+                }
+        return metadata
+
     # ── Direct Messaging (1-to-1) ─────────────────────────────────────────────
 
     def send_dm(
@@ -145,6 +279,9 @@ class ChatManager:
                 "file_id": file_id or "",
             }
 
+        # Sender has read up to this message
+        self.mark_as_read(sender_id, "DM", recipient_id, ts)
+
         # Notify both sender and recipient
         self._notify_user(recipient_id, msg)
         self._notify_user(sender_id, msg)
@@ -190,6 +327,7 @@ class ChatManager:
             )
         msgs = [dict(r) for r in rows]
         msgs.reverse()
+        self.mark_as_read(user_a, "DM", user_b)
         return msgs
 
     # ── Group Management ──────────────────────────────────────────────────────
@@ -492,6 +630,9 @@ class ChatManager:
             # Broadcast to all members of the group
             members = self.db.fetchall("SELECT user_id FROM group_members WHERE group_id = ?", (group_id,))
 
+        # Sender has read up to this message
+        self.mark_as_read(sender_id, "GROUP", group_id, ts)
+
         for m in members:
             self._notify_user(m["user_id"], msg)
 
@@ -540,4 +681,5 @@ class ChatManager:
             )
         msgs = [dict(r) for r in rows]
         msgs.reverse()
+        self.mark_as_read(requesting_user_id, "GROUP", group_id)
         return True, msgs, ""

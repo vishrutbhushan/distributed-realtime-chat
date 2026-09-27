@@ -131,6 +131,15 @@ class Database:
                     uploaded_at      INTEGER NOT NULL,
                     FOREIGN KEY (owner_id) REFERENCES users(user_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS chat_reads (
+                    user_id             TEXT NOT NULL,
+                    chat_type           TEXT NOT NULL,
+                    target_id           TEXT NOT NULL,
+                    last_read_timestamp INTEGER NOT NULL,
+                    PRIMARY KEY (user_id, chat_type, target_id),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                );
             """)
 
     # ── Public helpers ────────────────────────────────────────────────────────
