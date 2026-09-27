@@ -393,11 +393,46 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     # ── File Sharing RPCs ─────────────────────────────────────────────────────
 
+    def _file_access_error(
+        self,
+        user_id: str,
+        chat_type: str,
+        target_id: str,
+        owner_id: str = "",
+    ) -> str:
+        """Return an access error unless the user belongs to the file's chat."""
+        chat_type = (chat_type or "").upper()
+        if chat_type == "DM":
+            participants = {owner_id, target_id}
+            if not target_id or "" in participants or user_id not in participants:
+                return "You do not have access to this direct-message file"
+            return ""
+
+        if chat_type == "GROUP":
+            group = self.db.fetchone("SELECT 1 FROM groups WHERE group_id = ?", (target_id,))
+            if not group:
+                return "Group not found"
+            if not self.chat.is_group_member(target_id, user_id):
+                return "You are not a member of this group"
+            return ""
+
+        return "Unsupported file chat type"
+
     def UploadFile(self, request, context):
         sess = self._require_auth(request.token, context)
+        chat_type = (request.chat_type or "").upper()
+        if chat_type == "DM":
+            if not self.auth.get_user_by_id(request.target_id):
+                return chat_pb2.UploadFileResponse(success=False, message="Direct-message user not found")
+        access_error = self._file_access_error(
+            sess["user_id"], chat_type, request.target_id, sess["user_id"]
+        )
+        if access_error:
+            return chat_pb2.UploadFileResponse(success=False, message=access_error)
+
         ok, meta, err = self.files.upload_file(
             owner_id=sess["user_id"],
-            chat_type=request.chat_type,
+            chat_type=chat_type,
             target_id=request.target_id,
             filename=request.filename,
             data=request.data,
@@ -413,7 +448,19 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         )
 
     def DownloadFile(self, request, context):
-        self._require_auth(request.token, context)
+        sess = self._require_auth(request.token, context)
+        row = self.db.fetchone(
+            "SELECT owner_id, chat_type, target_id FROM files WHERE file_id = ?",
+            (request.file_id,),
+        )
+        if not row:
+            return chat_pb2.DownloadFileResponse(success=False, message="File not found")
+        access_error = self._file_access_error(
+            sess["user_id"], row["chat_type"], row["target_id"], row["owner_id"]
+        )
+        if access_error:
+            return chat_pb2.DownloadFileResponse(success=False, message=access_error)
+
         ok, data, meta, err = self.files.download_file(request.file_id)
         if not ok:
             return chat_pb2.DownloadFileResponse(success=False, message=err)
