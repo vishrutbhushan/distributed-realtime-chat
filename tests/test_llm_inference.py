@@ -182,8 +182,9 @@ class InferenceTests(unittest.TestCase):
         )
         self.assertIn("Admin asked you", summary)
         prompt = model.prompts[0]["messages"][1]["content"]
-        self.assertIn("Ajay: on it", prompt)
-        self.assertIn("Refer to Ajay as \"You\"", prompt)
+        self.assertIn('- You: "on it"', prompt)
+        self.assertIn('- Admin: "please review deployment logs"', prompt)
+        self.assertIn('Address Ajay as "You"', prompt)
         self.assertIn("Summary:", prompt)
 
         # Verify header stripping
@@ -192,17 +193,28 @@ class InferenceTests(unittest.TestCase):
         s2 = inf2.summarize(["Admin: hi"], current_user="Ajay")
         self.assertEqual(s2, "You spoke with Admin.")
 
-        # Verify dialogue fallback when model repeats raw transcript
-        model3 = FakeModel("You: ajay call me\najay: egeh\najay: ehehe")
+        # Verify multi-line response joins into continuous informative prose
+        model3 = FakeModel("Alice asked for the staging report.\nYou confirmed that all checks passed.")
         inf3 = ChatInference(model3)
-        s3 = inf3.summarize(["ajay: call me"], current_user="ajay")
-        self.assertIn("exchanged brief messages", s3)
+        s3 = inf3.summarize(["Alice: check report", "Ajay: all good"], current_user="Ajay")
+        self.assertEqual(s3, "Alice asked for the staging report. You confirmed that all checks passed.")
 
         # Verify repeated sentence loop deduplication
         model4 = FakeModel("Alice asked you again. Alice asked you again. Alice asked you again.")
         inf4 = ChatInference(model4)
-        s4 = inf4.summarize(["Alice: hi"], current_user="ajay")
+        s4 = inf4.summarize(["Alice: hi"], current_user="Ajay")
         self.assertEqual(s4, "Alice asked you again.")
+
+    def test_summarize_bounds_to_previous_10_messages(self):
+        model = FakeModel("You and Alice discussed project updates.")
+        inference = ChatInference(model)
+        messages = [f"Alice: message {i}" for i in range(15)]
+        inference.summarize(messages, context_title="Test", current_user="Bob")
+        prompt = model.prompts[0]["messages"][1]["content"]
+        self.assertNotIn('"message 0"', prompt)
+        self.assertNotIn('"message 4"', prompt)
+        self.assertIn('"message 5"', prompt)
+        self.assertIn('"message 14"', prompt)
 
     def test_inference_reports_timeout(self):
         with patch.dict(os.environ, {"MODEL_TIMEOUT_SECONDS": "1"}):

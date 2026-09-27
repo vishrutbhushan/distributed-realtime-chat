@@ -242,13 +242,10 @@ class ChatInference:
         answer = re.sub(r"^(?:(?:summary|recap)(?:\s+for\s+[^:\n]+)?:\s*)+", "", answer, flags=re.IGNORECASE).strip()
         answer = re.sub(r"^You(?:'re| are) currently chatting with [^.]+\.\s*", "", answer, flags=re.IGNORECASE).strip()
 
-        # If model echoed raw dialogue lines (e.g. "You: msg\nName: msg"), summarize naturally
-        lines = [l.strip() for l in answer.splitlines() if l.strip()]
-        if len(lines) > 1 and all(re.match(r"^(?:You|[A-Za-z0-9_ -]+):\s*", l) for l in lines):
-            senders = list(dict.fromkeys(l.split(":")[0].strip() for l in lines))
-            other_senders = [s for s in senders if s.lower() != "you"]
-            others_str = ", ".join(other_senders) if other_senders else "the other participant"
-            answer = f"You and {others_str} exchanged brief messages and acknowledgements in this chat."
+        # Clean bullet points / line breaks into clean continuous text
+        lines = [re.sub(r"^[-*•]\s*", "", l.strip()) for l in answer.splitlines() if l.strip()]
+        if lines:
+            answer = " ".join(lines)
 
         # Remove repetitive looped sentences
         sentences = re.split(r"(?<=[.!?])\s+", answer)
@@ -260,7 +257,7 @@ class ChatInference:
             if not deduped or s_clean.lower() != deduped[-1].lower():
                 deduped.append(s_clean)
         if deduped:
-            answer = " ".join(deduped[:3])
+            answer = " ".join(deduped)
 
         if not answer:
             raise RuntimeError("The local model returned an empty response")
@@ -321,7 +318,7 @@ class ChatInference:
         if not messages:
             return "No messages in this chat to summarize yet."
         prompt = format_summarize(context_title, _bound_messages(messages), current_user=current_user)
-        raw = self._complete(prompt, max_tokens=100, temperature=0.0)
+        raw = self._complete(prompt, max_tokens=220, temperature=0.1)
 
         # Personalize pronouns: ensure current_user is addressed as "You" / "you"
         user = (current_user or "you").strip()
