@@ -42,9 +42,14 @@ const api = {
     return res.json();
   },
 
-  async getDMs(token, otherUserId) {
+  eventStreamUrl(token) {
+    return `${API_BASE}/api/events?token=${encodeURIComponent(token)}`;
+  },
+
+  async getDMs(token, otherUserId, signal) {
     const res = await fetch(
-      `${API_BASE}/api/messages/dm?token=${encodeURIComponent(token)}&other_user_id=${encodeURIComponent(otherUserId)}`
+      `${API_BASE}/api/messages/dm?token=${encodeURIComponent(token)}&other_user_id=${encodeURIComponent(otherUserId)}`,
+      { signal }
     );
     return res.json();
   },
@@ -64,9 +69,10 @@ const api = {
     return res.json();
   },
 
-  async getGroupMessages(token, groupId) {
+  async getGroupMessages(token, groupId, signal) {
     const res = await fetch(
-      `${API_BASE}/api/messages/group?token=${encodeURIComponent(token)}&group_id=${encodeURIComponent(groupId)}`
+      `${API_BASE}/api/messages/group?token=${encodeURIComponent(token)}&group_id=${encodeURIComponent(groupId)}`,
+      { signal }
     );
     return res.json();
   },

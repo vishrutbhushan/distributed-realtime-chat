@@ -36,6 +36,7 @@ from storage.database import Database
 # ── Configuration ─────────────────────────────────────────────────────────────
 NODE_ID           = os.environ.get("NODE_ID",           "node-1")
 PORT              = int(os.environ.get("PORT",          "50051"))
+STREAM_PORT       = int(os.environ.get("STREAM_PORT",   "50052"))
 WEB_PORT          = int(os.environ.get("WEB_PORT",      "8000"))
 DB_PATH           = os.environ.get("DB_PATH",           "/data/chat.db")
 FILE_STORAGE_PATH = os.environ.get("FILE_STORAGE_PATH", "/data/files/")
@@ -77,15 +78,45 @@ def serve():
     grpc_server.start()
     logger.info("[SERVER] gRPC listening on %s (mode=STANDALONE)", grpc_addr)
 
+    # Browser event streams can occupy one worker for their full lifetime.
+    # Keep them on a private listener and a bounded pool so they cannot starve
+    # the public unary RPC pool on PORT.
+    stream_server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=32),
+        options=[
+            ("grpc.max_send_message_length", 64 * 1024 * 1024),
+            ("grpc.max_receive_message_length", 64 * 1024 * 1024),
+            ("grpc.keepalive_time_ms", 10_000),
+            ("grpc.keepalive_timeout_ms", 5_000),
+        ],
+        maximum_concurrent_rpcs=32,
+    )
+    chat_pb2_grpc.add_ChatServiceServicer_to_server(servicer, stream_server)
+    stream_addr = f"127.0.0.1:{STREAM_PORT}"
+    stream_server.add_insecure_port(stream_addr)
+    stream_server.start()
+    logger.info("[SERVER] Internal event-stream gRPC listening on %s (max=32)", stream_addr)
+
     # 2. Start Web Gateway in background thread
-    httpd = run_web_gateway(port=WEB_PORT, grpc_target=f"localhost:{PORT}")
+    httpd = run_web_gateway(
+        port=WEB_PORT,
+        grpc_target=f"localhost:{PORT}",
+        stream_grpc_target=f"127.0.0.1:{STREAM_PORT}",
+    )
 
     try:
         grpc_server.wait_for_termination()
     except KeyboardInterrupt:
         logger.info("[SERVER] Shutting down")
+    finally:
         httpd.shutdown()
+        httpd.server_close()
+        for channel in getattr(httpd, "grpc_channels", ()):
+            channel.close()
+        stream_server.stop(grace=3)
         grpc_server.stop(grace=3)
+        servicer.presence.stop()
+        db.close()
 
 
 if __name__ == "__main__":

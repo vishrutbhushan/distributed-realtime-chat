@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 from typing import Iterable, List
@@ -24,6 +25,34 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_PATH = "/models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 MAX_CONTEXT_CHARS = 8000
+MAX_SMART_REPLY_WORDS = 18
+
+
+def _parse_smart_replies(raw: str) -> List[str] | None:
+    """Accept only three concise, distinct replies; never pad malformed output."""
+    text = (raw or "").strip()
+    lines = text.splitlines()
+
+    if len(lines) != 3:
+        return None
+
+    replies = []
+    for number, line in enumerate(lines, start=1):
+        match = re.fullmatch(rf"\s*{number}[.)]\s+(.+?)\s*", line)
+        if not match:
+            return None
+        cleaned = match.group(1).strip(" \t\"'`“”‘’")
+        if not cleaned or len(cleaned.split()) >= MAX_SMART_REPLY_WORDS:
+            return None
+        replies.append(cleaned)
+
+    if len(replies) != 3:
+        return None
+
+    normalized = [re.sub(r"[^\w]+", " ", reply.casefold()).strip() for reply in replies]
+    if any(not value for value in normalized) or len(set(normalized)) != 3:
+        return None
+    return replies
 
 
 def _bound_messages(messages: Iterable[str], max_chars: int = MAX_CONTEXT_CHARS) -> List[str]:
@@ -155,21 +184,32 @@ class ChatInference:
 
         return cls(model=model, is_mock=False)
 
-    def _complete(self, prompt: str, max_tokens: int, temperature: float) -> str:
+    def _complete(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        preserve_lines: bool = False,
+        timeout_seconds: float | None = None,
+        system_prompt: str | None = None,
+    ) -> str:
         if self.is_mock or self._model is None:
-            return self._mock_complete(prompt)
+            mock_prompt = f"{system_prompt or ''}\n{prompt}"
+            return self._mock_complete(mock_prompt)
+
+        timeout_seconds = timeout_seconds or self._timeout_seconds
 
         messages = [
             {
                 "role": "system",
-                "content": (
+                "content": system_prompt or (
                     "You assist people collaborating in a team chat. Ground every answer "
                     "in the supplied conversation. Do not invent decisions, events, or facts."
                 ),
             },
             {"role": "user", "content": prompt},
         ]
-        slot_timeout = min(float(self._timeout_seconds), 25.0)
+        slot_timeout = min(float(timeout_seconds), 25.0)
         if not self._slot.acquire(timeout=slot_timeout):
             raise RuntimeError("Local LLM is busy processing another request; retry shortly")
         try:
@@ -185,14 +225,19 @@ class ChatInference:
 
         future.add_done_callback(lambda _: self._slot.release())
         try:
-            response = future.result(timeout=self._timeout_seconds)
+            response = future.result(timeout=timeout_seconds)
         except TimeoutError as exc:
             raise RuntimeError(
-                f"Local model inference exceeded timeout limit of {self._timeout_seconds} seconds"
+                f"Local model inference exceeded timeout limit of {timeout_seconds:g} seconds"
             ) from exc
 
         answer = response["choices"][0]["message"]["content"]
         answer = (answer or "").strip()
+        if preserve_lines:
+            if not answer:
+                raise RuntimeError("The local model returned an empty response")
+            return answer
+
         # Clean up any accidental model headers or intros
         answer = re.sub(r"^(?:(?:summary|recap)(?:\s+for\s+[^:\n]+)?:\s*)+", "", answer, flags=re.IGNORECASE).strip()
         answer = re.sub(r"^You(?:'re| are) currently chatting with [^.]+\.\s*", "", answer, flags=re.IGNORECASE).strip()
@@ -223,35 +268,52 @@ class ChatInference:
 
     def _mock_complete(self, prompt: str) -> str:
         """Rule-based mock generator for development and environments without GGUF weights."""
-        if "generate exactly 3" in prompt.lower():
-            return "Sounds good, thanks for confirming!\nI'll check the details and report back.\nLet me know if you need any assistance."
+        if "three distinct, standalone options" in prompt.lower():
+            return (
+                "1) Sounds good, thanks for confirming!\n"
+                "2) I'll check the details and report back.\n"
+                "3) Let me know if you need any assistance."
+            )
         if "summary" in prompt.lower():
             return "You and the team reviewed ongoing updates and confirmed active discussion points."
         return "Suggested action: Follow up on the latest message and confirm details."
 
     def smart_replies(
-        self, recent_messages: List[str], current_message: str, context_title: str = "Chat"
+        self,
+        recent_messages: List[str],
+        current_message: str,
+        context_title: str = "Chat",
+        current_user: str = "the current user",
     ) -> List[str]:
-        prompt = format_smart_reply(
-            context_title,
-            _bound_messages(recent_messages),
-            current_message,
-        )
-        raw = self._complete(prompt, max_tokens=160, temperature=0.25)
-        replies = []
-        for line in raw.splitlines():
-            cleaned = re.sub(r"^\s*(?:\d+[.)]|[-*])\s*", "", line).strip()
-            if cleaned and cleaned.lower() not in {item.lower() for item in replies}:
-                replies.append(cleaned)
-        if len(replies) < 3:
-            # Pad with sensible fallbacks if model output had fewer than 3 lines
-            defaults = ["Sounds good!", "I'll look into it.", "Understood, thanks!"]
-            for d in defaults:
-                if len(replies) >= 3:
-                    break
-                if d.lower() not in {item.lower() for item in replies}:
-                    replies.append(d)
-        return replies[:3]
+        if not (current_message or "").strip():
+            raise ValueError("Smart replies require a text message to reply to")
+
+        started = time.monotonic()
+        for attempt in range(2):
+            remaining = self._timeout_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                break
+
+            system_prompt, latest_message = format_smart_reply(
+                context_title,
+                _bound_messages(recent_messages),
+                current_message,
+                current_user=current_user,
+                retry=attempt == 1,
+            )
+            raw = self._complete(
+                latest_message,
+                max_tokens=160,
+                temperature=0.25,
+                preserve_lines=True,
+                timeout_seconds=remaining,
+                system_prompt=system_prompt,
+            )
+            replies = _parse_smart_replies(raw)
+            if replies is not None:
+                return replies
+
+        raise RuntimeError("The local model could not return three distinct, valid smart replies")
 
     def summarize(
         self, messages: List[str], context_title: str = "Chat", current_user: str = "you"

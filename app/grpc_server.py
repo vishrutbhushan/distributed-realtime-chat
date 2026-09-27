@@ -31,6 +31,9 @@ from storage.database import Database
 
 logger = logging.getLogger(__name__)
 
+STREAM_AUTH_CHECK_INTERVAL_SECONDS = 5.0
+STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
+
 
 def create_llm_stub(llm_server_addr: str):
     """Create a gRPC stub to the local LLM server."""
@@ -54,9 +57,12 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def __init__(self, db: Database, node_id: str, file_storage_path: str, llm_server_addr: str):
         self.db = db
         self.node_id = node_id
-        self.auth = AuthManager(db)
         self.chat = ChatManager(db)
-        self.presence = PresenceManager(db)
+        self.presence = PresenceManager(
+            db,
+            on_presence_change=lambda _user_ids: self.chat.publish_directory_changed_for_all(),
+        )
+        self.auth = AuthManager(db, presence=self.presence)
         self.files = FileManager(db, file_storage_path)
         self.llm = create_llm_stub(llm_server_addr)
 
@@ -64,19 +70,42 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     # ── Auth Helper ───────────────────────────────────────────────────────────
 
-    def _require_auth(self, token: str, context) -> dict:
+    @staticmethod
+    def _client_kind(context) -> str:
+        if context is None:
+            return "cli"
+        try:
+            for item in context.invocation_metadata() or ():
+                key, value = (item.key, item.value) if hasattr(item, "key") else item
+                if key.lower() == "x-chat-client-kind" and value:
+                    return str(value).lower()
+        except Exception:
+            logger.debug("[AUTH] Client kind metadata was unavailable", exc_info=True)
+        return "cli"
+
+    def _require_auth(self, token: str, context, *, record_activity: bool = True) -> dict:
         if not token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Missing session token")
         sess = self.auth.validate_token(token)
         if not sess:
+            self.presence.end_session(token)
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired session token")
+        if record_activity:
+            self.presence.note_rpc_activity(
+                sess["user_id"],
+                token,
+                sess["expires_at"],
+                self._client_kind(context),
+            )
         return sess
 
     # ── Authentication RPCs ───────────────────────────────────────────────────
 
     def Signup(self, request, context):
         logger.info("[RPC] Signup request for username: %s", request.username)
-        ok, token, uid, uname, msg = self.auth.signup(request.username, request.password)
+        ok, token, uid, uname, msg = self.auth.signup(
+            request.username, request.password, self._client_kind(context)
+        )
         return chat_pb2.SignupResponse(
             success=ok,
             token=token,
@@ -87,7 +116,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def Login(self, request, context):
         logger.info("[RPC] Login request for username: %s", request.username)
-        ok, token, uid, uname, msg = self.auth.login(request.username, request.password)
+        ok, token, uid, uname, msg = self.auth.login(
+            request.username, request.password, self._client_kind(context)
+        )
         return chat_pb2.LoginResponse(
             success=ok,
             token=token,
@@ -141,8 +172,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def UpdatePresence(self, request, context):
         sess = self._require_auth(request.token, context)
-        self.auth.update_status(sess["user_id"], request.status)
-        return chat_pb2.UpdatePresenceResponse(success=True)
+        return chat_pb2.UpdatePresenceResponse(
+            success=self.presence.request_status(request.token, request.status)
+        )
 
     # ── 1-on-1 Direct Messaging RPCs ──────────────────────────────────────────
 
@@ -303,33 +335,128 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ── Server-Streaming Messages ─────────────────────────────────────────────
 
     def StreamMessages(self, request, context):
-        sess = self._require_auth(request.token, context)
+        sess = self._require_auth(request.token, context, record_activity=False)
         user_id = sess["user_id"]
+        stream_id = str(uuid.uuid4())
+        self.presence.connect_stream(
+            user_id, request.token, stream_id, sess["expires_at"]
+        )
         q = queue.Queue(maxsize=128)
         self.chat.subscribe(user_id, q)
         logger.info("[STREAM] User %s connected to event stream", sess["username"])
 
         try:
+            # READY lets the browser know its subscription is installed before
+            # it loads snapshots; messages arriving during those reads are then
+            # reconciled by message_id on the client.
+            yield chat_pb2.MessageEvent(event_type="READY")
+            last_auth_check = time.monotonic()
+            last_heartbeat = last_auth_check
+            auth_check_interval = STREAM_AUTH_CHECK_INTERVAL_SECONDS
+            heartbeat_interval = STREAM_HEARTBEAT_INTERVAL_SECONDS
+
             while context.is_active():
+                now = time.monotonic()
+                if now - last_auth_check >= auth_check_interval:
+                    last_auth_check = now
+                    if not self.auth.token_is_valid(request.token):
+                        self.presence.end_session(request.token)
+                        yield chat_pb2.MessageEvent(event_type="AUTH_EXPIRED")
+                        return
+
+                if now - last_heartbeat >= heartbeat_interval:
+                    last_heartbeat = now
+                    yield chat_pb2.MessageEvent(event_type="HEARTBEAT")
+
+                wait_for = min(
+                    1.0,  # Bound cancellation latency without issuing browser HTTP polls.
+                    auth_check_interval - (now - last_auth_check),
+                    heartbeat_interval - (now - last_heartbeat),
+                )
                 try:
-                    event_data = q.get(timeout=1.0)
-                    msg_proto = self._to_message_proto(event_data)
-                    yield chat_pb2.MessageEvent(type="NEW_MESSAGE", message=msg_proto)
+                    event = q.get(timeout=max(0.1, wait_for))
                 except queue.Empty:
                     pass
+                else:
+                    # Validate a session before delivering any queued data so a
+                    # logout revokes access promptly, even with a busy stream.
+                    if not self.auth.token_is_valid(request.token):
+                        self.presence.end_session(request.token)
+                        yield chat_pb2.MessageEvent(event_type="AUTH_EXPIRED")
+                        return
+
+                    event_type = event.get("event_type", "NEW_MESSAGE")
+                    message = event.get("message")
+                    if event_type == "NEW_MESSAGE" and message:
+                        if message.get("chat_type") == "GROUP" and not self.chat.is_group_member(
+                            message.get("group_id", ""), user_id
+                        ):
+                            # Membership may have been revoked after the event
+                            # was queued. Do not disclose group content.
+                            continue
+                        yield chat_pb2.MessageEvent(
+                            event_type=event_type,
+                            message=self._to_message_proto(message),
+                        )
+                    elif event_type == "GROUP_ACCESS_REVOKED" and message:
+                        yield chat_pb2.MessageEvent(
+                            event_type=event_type,
+                            message=chat_pb2.Message(
+                                chat_type="GROUP",
+                                group_id=message.get("group_id", ""),
+                            ),
+                        )
+                    else:
+                        yield chat_pb2.MessageEvent(event_type=event_type)
         except Exception as exc:
             logger.debug("[STREAM] Stream loop ended: %s", exc)
         finally:
             self.chat.unsubscribe(user_id, q)
+            self.presence.disconnect_stream(stream_id)
             logger.info("[STREAM] User %s disconnected from event stream", sess["username"])
 
     # ── File Sharing RPCs ─────────────────────────────────────────────────────
 
+    def _file_access_error(
+        self,
+        user_id: str,
+        chat_type: str,
+        target_id: str,
+        owner_id: str = "",
+    ) -> str:
+        """Return an access error unless the user belongs to the file's chat."""
+        chat_type = (chat_type or "").upper()
+        if chat_type == "DM":
+            participants = {owner_id, target_id}
+            if not target_id or "" in participants or user_id not in participants:
+                return "You do not have access to this direct-message file"
+            return ""
+
+        if chat_type == "GROUP":
+            group = self.db.fetchone("SELECT 1 FROM groups WHERE group_id = ?", (target_id,))
+            if not group:
+                return "Group not found"
+            if not self.chat.is_group_member(target_id, user_id):
+                return "You are not a member of this group"
+            return ""
+
+        return "Unsupported file chat type"
+
     def UploadFile(self, request, context):
         sess = self._require_auth(request.token, context)
+        chat_type = (request.chat_type or "").upper()
+        if chat_type == "DM":
+            if not self.auth.get_user_by_id(request.target_id):
+                return chat_pb2.UploadFileResponse(success=False, message="Direct-message user not found")
+        access_error = self._file_access_error(
+            sess["user_id"], chat_type, request.target_id, sess["user_id"]
+        )
+        if access_error:
+            return chat_pb2.UploadFileResponse(success=False, message=access_error)
+
         ok, meta, err = self.files.upload_file(
             owner_id=sess["user_id"],
-            chat_type=request.chat_type,
+            chat_type=chat_type,
             target_id=request.target_id,
             filename=request.filename,
             data=request.data,
@@ -345,7 +472,19 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         )
 
     def DownloadFile(self, request, context):
-        self._require_auth(request.token, context)
+        sess = self._require_auth(request.token, context)
+        row = self.db.fetchone(
+            "SELECT owner_id, chat_type, target_id FROM files WHERE file_id = ?",
+            (request.file_id,),
+        )
+        if not row:
+            return chat_pb2.DownloadFileResponse(success=False, message="File not found")
+        access_error = self._file_access_error(
+            sess["user_id"], row["chat_type"], row["target_id"], row["owner_id"]
+        )
+        if access_error:
+            return chat_pb2.DownloadFileResponse(success=False, message=access_error)
+
         ok, data, meta, err = self.files.download_file(request.file_id)
         if not ok:
             return chat_pb2.DownloadFileResponse(success=False, message=err)
@@ -359,7 +498,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ── LLM Features (Passing Full Chat History) ──────────────────────────────
 
     def GetSmartReplies(self, request, context):
-        self._require_auth(request.token, context)
+        sess = self._require_auth(request.token, context)
         rid = request.request_id or str(uuid.uuid4())
 
         if not self.llm:
@@ -373,7 +512,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     chat_history=list(request.chat_history),
                     current_message=request.current_message,
                     context_title=request.context_title or "Chat",
-                )
+                ),
+                metadata=(("x-chat-current-user", sess.get("username", "you")),),
             )
             return chat_pb2.SmartReplyResponse(
                 request_id=resp.request_id,
