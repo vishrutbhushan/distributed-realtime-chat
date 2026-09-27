@@ -169,7 +169,8 @@ class ChatInference:
             },
             {"role": "user", "content": prompt},
         ]
-        if not self._slot.acquire(blocking=False):
+        slot_timeout = min(float(self._timeout_seconds), 25.0)
+        if not self._slot.acquire(timeout=slot_timeout):
             raise RuntimeError("Local LLM is busy processing another request; retry shortly")
         try:
             future = self._executor.submit(
@@ -192,6 +193,9 @@ class ChatInference:
 
         answer = response["choices"][0]["message"]["content"]
         answer = (answer or "").strip()
+        # Clean up any accidental model headers or intros
+        answer = re.sub(r"^(?:(?:summary|recap)(?:\s+for\s+[^:\n]+)?:\s*)+", "", answer, flags=re.IGNORECASE).strip()
+        answer = re.sub(r"^You(?:'re| are) currently chatting with [^.]+\.\s*", "", answer, flags=re.IGNORECASE).strip()
         if not answer:
             raise RuntimeError("The local model returned an empty response")
         return answer
@@ -228,8 +232,12 @@ class ChatInference:
                     replies.append(d)
         return replies[:3]
 
-    def summarize(self, messages: List[str], context_title: str = "Chat") -> str:
-        prompt = format_summarize(context_title, _bound_messages(messages))
+    def summarize(
+        self, messages: List[str], context_title: str = "Chat", current_user: str = "you"
+    ) -> str:
+        if not messages:
+            return "No messages in this chat to summarize yet."
+        prompt = format_summarize(context_title, _bound_messages(messages), current_user=current_user)
         return self._complete(prompt, max_tokens=256, temperature=0.1)
 
     def suggest(

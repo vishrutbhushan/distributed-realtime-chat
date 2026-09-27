@@ -388,7 +388,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             )
 
     def SummarizeChat(self, request, context):
-        self._require_auth(request.token, context)
+        sess = self._require_auth(request.token, context)
         rid = request.request_id or str(uuid.uuid4())
 
         if not self.llm:
@@ -396,11 +396,42 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 request_id=rid, success=False, error="LLM service unreachable"
             )
         try:
+            history = list(request.chat_history)
+            current_user = request.current_user or sess.get("username", "user")
+
+            # Fallback to DB if chat_history was empty
+            if not history and request.target_id:
+                if request.chat_type == "GROUP":
+                    ok, msgs, _ = self.chat.get_group_history(
+                        group_id=request.target_id,
+                        requesting_user_id=sess["user_id"],
+                        limit=50,
+                    )
+                    if ok and msgs:
+                        history = [
+                            f"{m.get('sender_username', 'User')}: {m.get('content', '')}"
+                            for m in msgs
+                            if m.get("content")
+                        ]
+                elif request.chat_type == "DM":
+                    msgs = self.chat.get_dm_history(
+                        user_a=sess["user_id"],
+                        user_b=request.target_id,
+                        limit=50,
+                    )
+                    if msgs:
+                        history = [
+                            f"{m.get('sender_username', 'User')}: {m.get('content', '')}"
+                            for m in msgs
+                            if m.get("content")
+                        ]
+
             resp = self.llm.SummarizeConversation(
                 llm_pb2.SummarizeRequest(
                     request_id=rid,
-                    chat_history=list(request.chat_history),
+                    chat_history=history,
                     context_title=request.context_title or "Chat",
+                    current_user=current_user,
                 )
             )
             return chat_pb2.SummarizeChatResponse(

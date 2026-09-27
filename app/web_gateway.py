@@ -463,8 +463,11 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                 resp = self.grpc_stub.SummarizeChat(
                     chat_pb2.SummarizeChatRequest(
                         token=data.get("token", ""),
+                        chat_type=data.get("chat_type", ""),
+                        target_id=data.get("target_id", ""),
                         chat_history=data.get("chat_history", []),
                         context_title=data.get("context_title", "Chat"),
+                        current_user=data.get("current_user", ""),
                     )
                 )
                 self._send_json(200, {

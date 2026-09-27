@@ -46,6 +46,7 @@ message SummarizeRequest {
   string          request_id   = 1;
   repeated string chat_history = 2; // entire conversation history as "username: message"
   string          context_title= 3;
+  string          current_user = 4;
 }
 
 message SummarizeResponse {

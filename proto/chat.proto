@@ -301,6 +301,7 @@ message SummarizeChatRequest {
   repeated string chat_history = 4; // entire conversation history
   string          context_title= 5;
   string          request_id   = 6;
+  string          current_user = 7;
 }
 
 message SummarizeChatResponse {

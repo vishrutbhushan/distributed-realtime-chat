@@ -152,7 +152,7 @@ const api = {
     return res.json();
   },
 
-  async summarize(token, chatType, targetId, chatHistory, contextTitle) {
+  async summarize(token, chatType, targetId, chatHistory, contextTitle, currentUser) {
     const res = await fetch(`${API_BASE}/api/llm/summarize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -162,6 +162,7 @@ const api = {
         target_id: targetId,
         chat_history: chatHistory,
         context_title: contextTitle,
+        current_user: currentUser,
         request_id: crypto.randomUUID(),
       }),
     });

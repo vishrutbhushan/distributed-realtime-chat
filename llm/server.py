@@ -109,10 +109,11 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
             history = list(request.messages)
 
         title = getattr(request, "context_title", "") or getattr(request, "channel_name", "") or "Chat"
-        logger.info("[LLM] Summarize title='%s' msgs=%d", title, len(history))
+        user = getattr(request, "current_user", "") or "you"
+        logger.info("[LLM] Summarize title='%s' msgs=%d user='%s'", title, len(history), user)
 
         try:
-            summary = self.inference.summarize(history, title)
+            summary = self.inference.summarize(history, title, current_user=user)
             return llm_pb2.SummarizeResponse(
                 request_id=rid, summary=summary, success=True
             )

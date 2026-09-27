@@ -24,16 +24,17 @@ Replies:"""
 
 
 SUMMARIZE_PROMPT = """\
-You summarize team chat accurately. Use only statements present in the messages.
-
-Chat: {context_title}
-
-Messages:
+Recent conversation in {context_title}:
 {messages}
 
-Write a concise bullet-point summary of the key topics, confirmed decisions, action items,
-and unresolved questions. Do not turn suggestions into decisions.
-Summary:"""
+Write a natural, conversational summary of what happened for the user (You):
+- Always refer to the user as "You" and other participants by their names.
+- Describe the conversation flow naturally (e.g. what you commented, what others replied, and the outcome).
+- Do not mention who the chat is with (never say "You are chatting with...").
+- Do not list isolated single words. Summarize the meaning of the exchanges.
+- Keep it natural, human-like, and concise.
+
+Summary in one paragraph:"""
 
 
 CONTEXT_SUGGESTION_PROMPT = """\
@@ -59,10 +60,29 @@ def format_smart_reply(context_title: str, recent_messages: list, current_messag
     )
 
 
-def format_summarize(context_title: str, messages: list) -> str:
+def format_summarize(context_title: str, messages: list, current_user: str = "you") -> str:
+    user = (current_user or "you").strip()
+    user_lower = user.lower()
+
+    formatted_msgs = []
+    for msg in (messages or []):
+        m = str(msg).strip()
+        colon_idx = m.find(":")
+        if colon_idx != -1:
+            sender = m[:colon_idx].strip()
+            rest = m[colon_idx + 1:].strip()
+            if sender.lower() == user_lower:
+                formatted_msgs.append(f"You: {rest}")
+            else:
+                formatted_msgs.append(f"{sender}: {rest}")
+        else:
+            formatted_msgs.append(m)
+
+    msg_block = "\n".join(formatted_msgs) if formatted_msgs else "(no messages)"
     return SUMMARIZE_PROMPT.format(
         context_title=context_title or "Chat",
-        messages="\n".join(messages),
+        current_user=user,
+        messages=msg_block,
     )
 
 

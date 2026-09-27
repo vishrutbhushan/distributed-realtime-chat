@@ -508,16 +508,28 @@ async function requestSummarize() {
   openModal("summary-modal");
   document.getElementById("summary-text").innerText = "Generating summary over entire conversation history...";
 
-  const historyStrings = currentMessages.map(m => `${m.sender_username}: ${m.content}`);
+  let historyStrings = currentMessages.map(m => `${m.sender_username || "User"}: ${m.content || ""}`).filter(s => s.trim().length > 0);
+  if (historyStrings.length === 0) {
+    try {
+      await loadMessages(true);
+      historyStrings = currentMessages.map(m => `${m.sender_username || "User"}: ${m.content || ""}`).filter(s => s.trim().length > 0);
+    } catch (_) {}
+  }
+
   try {
     const data = await api.summarize(
       currentUser.token,
       currentChat.type,
       currentChat.id,
       historyStrings,
-      currentChat.name
+      currentChat.name,
+      currentUser.username
     );
-    document.getElementById("summary-text").innerText = data.summary || "No summary available.";
+    if (!data.success && data.error) {
+      document.getElementById("summary-text").innerText = "Could not generate summary: " + data.error;
+    } else {
+      document.getElementById("summary-text").innerText = data.summary || "No summary available.";
+    }
   } catch (e) {
     document.getElementById("summary-text").innerText = "Error requesting summary: " + e.message;
   }

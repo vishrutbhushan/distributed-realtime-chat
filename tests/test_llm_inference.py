@@ -54,6 +54,26 @@ class InferenceTests(unittest.TestCase):
         summary = inference.summarize(["Alice: status update"])
         self.assertIn("Discussion", summary)
 
+    def test_summarize_includes_personalized_user_and_guidelines(self):
+        model = FakeModel("• Admin asked you to review the deployment logs.")
+        inference = ChatInference(model)
+        summary = inference.summarize(
+            ["Admin: please review deployment logs", "Ajay: on it"],
+            context_title="DevOps",
+            current_user="Ajay",
+        )
+        self.assertIn("Admin asked you", summary)
+        prompt = model.prompts[0]["messages"][1]["content"]
+        self.assertIn("You: on it", prompt)
+        self.assertIn("Always refer to the user as \"You\"", prompt)
+        self.assertIn("Summary in one paragraph:", prompt)
+
+        # Verify header stripping
+        model2 = FakeModel("Summary for Ajay: You spoke with Admin.")
+        inf2 = ChatInference(model2)
+        s2 = inf2.summarize(["Admin: hi"], current_user="Ajay")
+        self.assertEqual(s2, "You spoke with Admin.")
+
     def test_inference_reports_timeout(self):
         with patch.dict(os.environ, {"MODEL_TIMEOUT_SECONDS": "1"}):
             inference = ChatInference(SlowModel())
