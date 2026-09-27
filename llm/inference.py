@@ -196,6 +196,27 @@ class ChatInference:
         # Clean up any accidental model headers or intros
         answer = re.sub(r"^(?:(?:summary|recap)(?:\s+for\s+[^:\n]+)?:\s*)+", "", answer, flags=re.IGNORECASE).strip()
         answer = re.sub(r"^You(?:'re| are) currently chatting with [^.]+\.\s*", "", answer, flags=re.IGNORECASE).strip()
+
+        # If model echoed raw dialogue lines (e.g. "You: msg\nName: msg"), summarize naturally
+        lines = [l.strip() for l in answer.splitlines() if l.strip()]
+        if len(lines) > 1 and all(re.match(r"^(?:You|[A-Za-z0-9_ -]+):\s*", l) for l in lines):
+            senders = list(dict.fromkeys(l.split(":")[0].strip() for l in lines))
+            other_senders = [s for s in senders if s.lower() != "you"]
+            others_str = ", ".join(other_senders) if other_senders else "the other participant"
+            answer = f"You and {others_str} exchanged brief messages and acknowledgements in this chat."
+
+        # Remove repetitive looped sentences
+        sentences = re.split(r"(?<=[.!?])\s+", answer)
+        deduped = []
+        for s in sentences:
+            s_clean = s.strip()
+            if not s_clean:
+                continue
+            if not deduped or s_clean.lower() != deduped[-1].lower():
+                deduped.append(s_clean)
+        if deduped:
+            answer = " ".join(deduped[:3])
+
         if not answer:
             raise RuntimeError("The local model returned an empty response")
         return answer
@@ -205,7 +226,7 @@ class ChatInference:
         if "generate exactly 3" in prompt.lower():
             return "Sounds good, thanks for confirming!\nI'll check the details and report back.\nLet me know if you need any assistance."
         if "summary" in prompt.lower():
-            return "• Discussion ongoing in chat.\n• Key points shared between participants.\n• Action items logged."
+            return "You and the team reviewed ongoing updates and confirmed active discussion points."
         return "Suggested action: Follow up on the latest message and confirm details."
 
     def smart_replies(
@@ -238,7 +259,20 @@ class ChatInference:
         if not messages:
             return "No messages in this chat to summarize yet."
         prompt = format_summarize(context_title, _bound_messages(messages), current_user=current_user)
-        return self._complete(prompt, max_tokens=256, temperature=0.1)
+        raw = self._complete(prompt, max_tokens=100, temperature=0.0)
+
+        # Personalize pronouns: ensure current_user is addressed as "You" / "you"
+        user = (current_user or "you").strip()
+        if user and user.lower() != "you":
+            raw = re.sub(rf"^(?:In this chat,\s*)?{re.escape(user)}\b", "You", raw, flags=re.IGNORECASE)
+            raw = re.sub(rf"\b{re.escape(user)}\b", "you", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\byou's\b", "your", raw, flags=re.IGNORECASE)
+            raw = re.sub(r"\bYou was\b", "You were", raw)
+            raw = re.sub(r"\byou was\b", "you were", raw)
+            raw = re.sub(r"\bYou has\b", "You have", raw)
+            raw = re.sub(r"\byou has\b", "you have", raw)
+
+        return raw
 
     def suggest(
         self, recent_messages: List[str], context_title: str = "Chat", current_user: str = "user"

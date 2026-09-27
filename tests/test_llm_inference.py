@@ -52,7 +52,7 @@ class InferenceTests(unittest.TestCase):
         replies = inference.smart_replies(["Alice: hello"], "How are you?")
         self.assertEqual(len(replies), 3)
         summary = inference.summarize(["Alice: status update"])
-        self.assertIn("Discussion", summary)
+        self.assertIn("discussion", summary.lower())
 
     def test_summarize_includes_personalized_user_and_guidelines(self):
         model = FakeModel("• Admin asked you to review the deployment logs.")
@@ -64,15 +64,27 @@ class InferenceTests(unittest.TestCase):
         )
         self.assertIn("Admin asked you", summary)
         prompt = model.prompts[0]["messages"][1]["content"]
-        self.assertIn("You: on it", prompt)
-        self.assertIn("Always refer to the user as \"You\"", prompt)
-        self.assertIn("Summary in one paragraph:", prompt)
+        self.assertIn("Ajay: on it", prompt)
+        self.assertIn("Refer to Ajay as \"You\"", prompt)
+        self.assertIn("Summary:", prompt)
 
         # Verify header stripping
         model2 = FakeModel("Summary for Ajay: You spoke with Admin.")
         inf2 = ChatInference(model2)
         s2 = inf2.summarize(["Admin: hi"], current_user="Ajay")
         self.assertEqual(s2, "You spoke with Admin.")
+
+        # Verify dialogue fallback when model repeats raw transcript
+        model3 = FakeModel("You: ajay call me\najay: egeh\najay: ehehe")
+        inf3 = ChatInference(model3)
+        s3 = inf3.summarize(["ajay: call me"], current_user="ajay")
+        self.assertIn("exchanged brief messages", s3)
+
+        # Verify repeated sentence loop deduplication
+        model4 = FakeModel("Alice asked you again. Alice asked you again. Alice asked you again.")
+        inf4 = ChatInference(model4)
+        s4 = inf4.summarize(["Alice: hi"], current_user="ajay")
+        self.assertEqual(s4, "Alice asked you again.")
 
     def test_inference_reports_timeout(self):
         with patch.dict(os.environ, {"MODEL_TIMEOUT_SECONDS": "1"}):

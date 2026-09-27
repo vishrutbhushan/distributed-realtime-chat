@@ -24,17 +24,22 @@ Replies:"""
 
 
 SUMMARIZE_PROMPT = """\
-Recent conversation in {context_title}:
+You are an executive assistant that writes brief, grounded chat summaries in one concise paragraph.
+
+Chat: {context_title}
+
+Messages:
 {messages}
 
-Write a natural, conversational summary of what happened for the user (You):
-- Always refer to the user as "You" and other participants by their names.
-- Describe the conversation flow naturally (e.g. what you commented, what others replied, and the outcome).
-- Do not mention who the chat is with (never say "You are chatting with...").
-- Do not list isolated single words. Summarize the meaning of the exchanges.
-- Keep it natural, human-like, and concise.
+Instructions:
+Write a concise 1-paragraph summary (2-3 sentences max) from the perspective of {current_user}:
+- Refer to {current_user} as "You", and other participants by name.
+- Summarize what you and others discussed, requested, or confirmed.
+- Do NOT output dialogue or script lines (never write "Name: message").
+- Do NOT list isolated greetings or repeat words.
+- Rely ONLY on statements directly present above. Do NOT invent events, topics, or plans.
 
-Summary in one paragraph:"""
+Summary:"""
 
 
 CONTEXT_SUGGESTION_PROMPT = """\
@@ -62,22 +67,33 @@ def format_smart_reply(context_title: str, recent_messages: list, current_messag
 
 def format_summarize(context_title: str, messages: list, current_user: str = "you") -> str:
     user = (current_user or "you").strip()
-    user_lower = user.lower()
 
-    formatted_msgs = []
+    # Clean and group messages to prevent raw repetition and spam loops
+    grouped = []
     for msg in (messages or []):
         m = str(msg).strip()
+        if not m:
+            continue
         colon_idx = m.find(":")
         if colon_idx != -1:
             sender = m[:colon_idx].strip()
-            rest = m[colon_idx + 1:].strip()
-            if sender.lower() == user_lower:
-                formatted_msgs.append(f"You: {rest}")
-            else:
-                formatted_msgs.append(f"{sender}: {rest}")
+            content = m[colon_idx + 1:].strip()
         else:
-            formatted_msgs.append(m)
+            sender = "User"
+            content = m
 
+        if not content:
+            continue
+
+        if grouped and grouped[-1]["sender"].lower() == sender.lower():
+            # If exact same message repeated by same sender, don't spam it
+            if content.lower() != grouped[-1]["last_content"].lower():
+                grouped[-1]["content"] += f", {content}"
+                grouped[-1]["last_content"] = content
+        else:
+            grouped.append({"sender": sender, "content": content, "last_content": content})
+
+    formatted_msgs = [f"{g['sender']}: {g['content']}" for g in grouped]
     msg_block = "\n".join(formatted_msgs) if formatted_msgs else "(no messages)"
     return SUMMARIZE_PROMPT.format(
         context_title=context_title or "Chat",
