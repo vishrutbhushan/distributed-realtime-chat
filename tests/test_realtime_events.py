@@ -16,7 +16,12 @@ import grpc
 from app.auth.manager import AuthManager
 from app.chat.manager import ChatManager
 from app import grpc_server
-from app.web_gateway import run_web_gateway
+from app.presence.manager import PresenceManager
+from app.web_gateway import (
+    _BrowserCallDetails,
+    _BrowserPresenceInterceptor,
+    run_web_gateway,
+)
 from storage.database import Database
 
 
@@ -35,14 +40,21 @@ class RealtimeEventTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db = Database(os.path.join(self.temp_dir.name, "events.db"))
-        self.auth = AuthManager(self.db)
         self.chat = ChatManager(self.db)
+        self.presence = PresenceManager(
+            self.db,
+            on_presence_change=lambda _user_ids: self.chat.publish_directory_changed_for_all(),
+            start_worker=False,
+        )
+        self.auth = AuthManager(self.db, presence=self.presence)
         self.servicer = grpc_server.ChatServicer.__new__(grpc_server.ChatServicer)
         self.servicer.db = self.db
         self.servicer.auth = self.auth
         self.servicer.chat = self.chat
+        self.servicer.presence = self.presence
 
     def tearDown(self):
+        self.presence.stop()
         self.db.close()
         self.temp_dir.cleanup()
 
@@ -50,6 +62,20 @@ class RealtimeEventTests(unittest.TestCase):
         ok, token, user_id, _, message = self.auth.signup(username, "pass1234")
         self.assertTrue(ok, message)
         return token, user_id
+
+    def test_gateway_tags_unary_and_stream_rpcs_as_browser_traffic(self):
+        interceptor = _BrowserPresenceInterceptor()
+        details = _BrowserCallDetails("/chat.Service/Call", None, None, None, None)
+
+        unary_details, _ = interceptor.intercept_unary_unary(
+            lambda updated, request: (updated, request), details, object()
+        )
+        stream_details, _ = interceptor.intercept_unary_stream(
+            lambda updated, request: (updated, request), details, object()
+        )
+
+        self.assertIn(("x-chat-client-kind", "browser"), unary_details.metadata)
+        self.assertIn(("x-chat-client-kind", "browser"), stream_details.metadata)
 
     def test_stream_routes_messages_and_unsubscribes_when_closed(self):
         token_a, user_a = self.create_user("stream_alice")
@@ -71,6 +97,28 @@ class RealtimeEventTests(unittest.TestCase):
 
         stream.close()
         self.assertEqual(self.chat.subscription_count(user_b), 0)
+
+    def test_logout_revokes_connected_browser_stream_and_marks_inactive(self):
+        ok, token, user_id, _, message = self.auth.signup(
+            "logout_stream_user", "pass1234", client_kind="browser"
+        )
+        self.assertTrue(ok, message)
+        stream = self.servicer.StreamMessages(
+            chat_pb2.StreamMessagesRequest(token=token), FakeContext()
+        )
+
+        self.assertEqual(next(stream).event_type, "READY")
+        self.assertEqual(self.auth.get_user_by_id(user_id)["status"], "active")
+
+        response = self.servicer.Logout(
+            chat_pb2.LogoutRequest(token=token), FakeContext()
+        )
+
+        self.assertTrue(response.success)
+        self.assertEqual(self.auth.get_user_by_id(user_id)["status"], "inactive")
+        self.assertEqual(next(stream).event_type, "AUTH_EXPIRED")
+        stream.close()
+        self.assertEqual(self.chat.subscription_count(user_id), 0)
 
     def test_expired_session_emits_auth_expired_and_cleans_subscription(self):
         token, user_id = self.create_user("stream_expiry")

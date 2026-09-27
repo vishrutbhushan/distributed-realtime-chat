@@ -39,6 +39,19 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
     def __init__(self, inference: ChatInference):
         self.inference = inference
 
+    @staticmethod
+    def _current_user(context) -> str:
+        if context is None:
+            return "the current user"
+        try:
+            for item in context.invocation_metadata() or ():
+                key, value = (item.key, item.value) if hasattr(item, "key") else item
+                if key.lower() == "x-chat-current-user" and value:
+                    return str(value)
+        except Exception:
+            logger.debug("[LLM] Current user metadata was unavailable", exc_info=True)
+        return "the current user"
+
     def GetLLMAnswer(self, request, context):
         logger.info("[LLM] GetLLMAnswer feature=%s", request.feature)
         rid = request.request_id or str(uuid.uuid4())
@@ -89,6 +102,7 @@ class LLMServicer(llm_pb2_grpc.LLMServiceServicer):
                 history,
                 request.current_message,
                 title,
+                current_user=self._current_user(context),
             )
             return llm_pb2.SmartReplyResponse(
                 request_id=rid, suggestions=suggestions, success=True

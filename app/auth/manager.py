@@ -24,16 +24,17 @@ def _hash(password: str) -> str:
 
 
 class AuthManager:
-    def __init__(self, db):
+    def __init__(self, db, presence=None):
         self.db = db
+        self.presence = presence
 
     # ── User Signup & Login ───────────────────────────────────────────────────
 
     def signup(
-        self, username: str, password: str
+        self, username: str, password: str, client_kind: str = "cli"
     ) -> Tuple[bool, str, str, str, str]:
         """
-        Register a new user.
+        Register a new user and its first authenticated session.
         Restrictions:
           - username: 3-20 alphanumeric characters or underscores
           - password: minimum 4 characters
@@ -65,9 +66,16 @@ class AuthManager:
             self.db.execute(
                 """
                 INSERT INTO users (user_id, username, password_hash, status, last_seen, created_at)
-                VALUES (?, ?, ?, 'active', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, username, _hash(password), now, now),
+                (
+                    user_id,
+                    username,
+                    _hash(password),
+                    "inactive" if self.presence else "active",
+                    now,
+                    now,
+                ),
             )
             # Create active session token
             token = str(uuid.uuid4())
@@ -79,6 +87,10 @@ class AuthManager:
                 (token, user_id, now, now + SESSION_TTL),
             )
             self.db.commit()
+            if self.presence:
+                self.presence.register_session(
+                    user_id, token, client_kind, now + SESSION_TTL
+                )
             logger.info("[AUTH] User signed up: %s (id=%s)", username, user_id)
             return True, token, user_id, username, "Account created successfully"
         except Exception as exc:
@@ -89,11 +101,11 @@ class AuthManager:
             return False, "", "", "", str(exc)
 
     def login(
-        self, username: str, password: str
+        self, username: str, password: str, client_kind: str = "cli"
     ) -> Tuple[bool, str, str, str, str]:
         """
         Authenticate an existing user.
-        Sets status to 'active'.
+        Starts a session; PresenceManager records the session's client activity.
         Returns: (success, token, user_id, username, message)
         """
         username = (username or "").strip()
@@ -117,12 +129,18 @@ class AuthManager:
                 """,
                 (token, user_id, now, now + SESSION_TTL),
             )
-            # Set user status to 'active' and update last_seen
-            self.db.execute(
-                "UPDATE users SET status = 'active', last_seen = ? WHERE user_id = ?",
-                (now, user_id),
-            )
+            # Presence is owned by PresenceManager when configured. Keep the
+            # standalone manager behavior for callers without that service.
+            if not self.presence:
+                self.db.execute(
+                    "UPDATE users SET status = 'active', last_seen = ? WHERE user_id = ?",
+                    (now, user_id),
+                )
             self.db.commit()
+            if self.presence:
+                self.presence.register_session(
+                    user_id, token, client_kind, now + SESSION_TTL
+                )
             logger.info("[AUTH] User logged in: %s (status=active)", username)
             return True, token, user_id, username, "Login successful"
         except Exception as exc:
@@ -132,8 +150,7 @@ class AuthManager:
 
     def logout(self, token: str) -> bool:
         """
-        End this session. Keep the account active while another valid session
-        for the same user remains.
+        End this session, then ask PresenceManager to recompute account status.
         """
         now = int(time.time())
         with self.db.lock:
@@ -144,22 +161,28 @@ class AuthManager:
             user_id = row["user_id"]
             try:
                 self.db.execute("DELETE FROM sessions WHERE token = ?", (token,))
-                active_session = self.db.fetchone(
-                    "SELECT 1 FROM sessions WHERE user_id = ? AND expires_at > ? LIMIT 1",
-                    (user_id, now),
-                )
-                status = "active" if active_session else "inactive"
-                self.db.execute(
-                    "UPDATE users SET status = ?, last_seen = ? WHERE user_id = ?",
-                    (status, now, user_id),
-                )
+                if not self.presence:
+                    active_session = self.db.fetchone(
+                        "SELECT 1 FROM sessions WHERE user_id = ? AND expires_at > ? LIMIT 1",
+                        (user_id, now),
+                    )
+                    status = "active" if active_session else "inactive"
+                    self.db.execute(
+                        "UPDATE users SET status = ?, last_seen = ? WHERE user_id = ?",
+                        (status, now, user_id),
+                    )
                 self.db.commit()
-                logger.info("[AUTH] User logged out (user_id=%s, status=%s)", user_id, status)
-                return True
             except Exception as exc:
                 self.db.rollback()
                 logger.error("[AUTH] Logout error: %s", exc)
                 return False
+
+        if self.presence:
+            self.presence.end_session(token)
+            row = self.db.fetchone("SELECT status FROM users WHERE user_id = ?", (user_id,))
+            status = row["status"] if row else "unknown"
+        logger.info("[AUTH] User logged out (user_id=%s, status=%s)", user_id, status)
+        return True
 
     def token_is_valid(self, token: str) -> bool:
         """Check session validity without treating a long-lived stream as activity."""
@@ -174,13 +197,12 @@ class AuthManager:
 
     def validate_token(self, token: str) -> Optional[dict]:
         """
-        Return user dict if session is valid and active, else None.
-        Updates last_seen as implicit heartbeat.
+        Return the authenticated user and session expiry without changing presence.
         """
         now = int(time.time())
         row = self.db.fetchone(
             """
-            SELECT s.user_id, u.username, u.status
+            SELECT s.user_id, s.expires_at, u.username, u.status
             FROM sessions s
             JOIN users u ON s.user_id = u.user_id
             WHERE s.token = ? AND s.expires_at > ?
@@ -190,22 +212,15 @@ class AuthManager:
         if not row:
             return None
 
-        # Refresh last seen and ensure status is active (throttled to at most once per 10s)
-        try:
-            self.db.execute(
-                "UPDATE users SET last_seen = ?, status = 'active' "
-                "WHERE user_id = ? AND (last_seen < ? OR status != 'active')",
-                (now, row["user_id"], now - 10),
-            )
-            self.db.commit()
-        except Exception:
-            self.db.rollback()
-
         return dict(row)
 
     def heartbeat(self, token: str):
-        """Refresh presence timestamp. Called on RPCs."""
-        self.validate_token(token)
+        """Validate a token and refresh presence only for an eligible CLI session."""
+        sess = self.validate_token(token)
+        if sess and self.presence:
+            self.presence.note_rpc_activity(
+                sess["user_id"], token, sess["expires_at"], client_kind="cli"
+            )
 
     def update_presence(self, user_id: str, status: str = "active"):
         """Explicitly update status ('active' | 'inactive') and last_seen."""

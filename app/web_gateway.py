@@ -6,6 +6,7 @@ and serves static web assets (HTML, CSS, JS).
 """
 
 import base64
+import collections
 import email
 import email.policy
 import json
@@ -27,10 +28,62 @@ logger = logging.getLogger(__name__)
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+class _BrowserCallDetails(
+    collections.namedtuple(
+        "_BrowserCallDetails",
+        ("method", "timeout", "metadata", "credentials", "wait_for_ready"),
+    ),
+    grpc.ClientCallDetails,
+):
+    pass
+
+
+class _BrowserPresenceInterceptor(
+    grpc.UnaryUnaryClientInterceptor,
+    grpc.UnaryStreamClientInterceptor,
+):
+    """Mark every gateway RPC as browser traffic without changing protobufs."""
+
+    @staticmethod
+    def _with_browser_kind(details):
+        metadata = list(details.metadata or ())
+        if not any(key.lower() == "x-chat-client-kind" for key, _ in metadata):
+            metadata.append(("x-chat-client-kind", "browser"))
+        return _BrowserCallDetails(
+            details.method,
+            details.timeout,
+            metadata,
+            details.credentials,
+            details.wait_for_ready,
+        )
+
+    def intercept_unary_unary(self, continuation, client_call_details, request):
+        return continuation(self._with_browser_kind(client_call_details), request)
+
+    def intercept_unary_stream(self, continuation, client_call_details, request):
+        return continuation(self._with_browser_kind(client_call_details), request)
+
+
 class WebGatewayHandler(BaseHTTPRequestHandler):
 
     grpc_stub: chat_pb2_grpc.ChatServiceStub = None
     stream_stub: chat_pb2_grpc.ChatServiceStub = None
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(20)
+        try:
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            for option, value in (
+                ("TCP_KEEPIDLE", 15),
+                ("TCP_KEEPINTVL", 5),
+                ("TCP_KEEPCNT", 3),
+            ):
+                level_option = getattr(socket, option, None)
+                if level_option is not None:
+                    self.connection.setsockopt(socket.IPPROTO_TCP, level_option, value)
+        except OSError:
+            logger.debug("[WEB] TCP keepalive tuning unavailable", exc_info=True)
 
     def _send_json(self, status_code: int, data: dict):
         body = json.dumps(data).encode("utf-8")
@@ -645,8 +698,11 @@ def run_web_gateway(
     stream_grpc_target: str = None,
 ) -> ThreadingHTTPServer:
     """Run the threaded HTTP Web Gateway server."""
-    channel = grpc.insecure_channel(grpc_target)
-    stream_channel = grpc.insecure_channel(stream_grpc_target or grpc_target)
+    interceptor = _BrowserPresenceInterceptor()
+    channel = grpc.intercept_channel(grpc.insecure_channel(grpc_target), interceptor)
+    stream_channel = grpc.intercept_channel(
+        grpc.insecure_channel(stream_grpc_target or grpc_target), interceptor
+    )
     WebGatewayHandler.grpc_stub = chat_pb2_grpc.ChatServiceStub(channel)
     WebGatewayHandler.stream_stub = chat_pb2_grpc.ChatServiceStub(stream_channel)
     httpd = ThreadingHTTPServer(("0.0.0.0", port), WebGatewayHandler)

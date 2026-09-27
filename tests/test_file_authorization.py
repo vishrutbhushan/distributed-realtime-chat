@@ -10,6 +10,7 @@ from app.auth.manager import AuthManager
 from app.chat.manager import ChatManager
 from app.files.manager import FileManager
 from app.grpc_server import ChatServicer
+from app.presence.manager import PresenceManager
 from storage.database import Database
 
 
@@ -17,13 +18,17 @@ class FileAuthorizationTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db = Database(os.path.join(self.temp_dir.name, "files.db"))
+        self.chat = ChatManager(self.db)
+        self.presence = PresenceManager(self.db, start_worker=False)
         self.service = ChatServicer.__new__(ChatServicer)
         self.service.db = self.db
-        self.service.auth = AuthManager(self.db)
-        self.service.chat = ChatManager(self.db)
+        self.service.presence = self.presence
+        self.service.auth = AuthManager(self.db, presence=self.presence)
+        self.service.chat = self.chat
         self.service.files = FileManager(self.db, os.path.join(self.temp_dir.name, "uploads"))
 
     def tearDown(self):
+        self.presence.stop()
         self.db.close()
         self.temp_dir.cleanup()
 

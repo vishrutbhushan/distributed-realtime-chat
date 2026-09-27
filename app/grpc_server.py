@@ -57,12 +57,12 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def __init__(self, db: Database, node_id: str, file_storage_path: str, llm_server_addr: str):
         self.db = db
         self.node_id = node_id
-        self.auth = AuthManager(db)
         self.chat = ChatManager(db)
         self.presence = PresenceManager(
             db,
             on_presence_change=lambda _user_ids: self.chat.publish_directory_changed_for_all(),
         )
+        self.auth = AuthManager(db, presence=self.presence)
         self.files = FileManager(db, file_storage_path)
         self.llm = create_llm_stub(llm_server_addr)
 
@@ -70,23 +70,42 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     # ── Auth Helper ───────────────────────────────────────────────────────────
 
-    def _require_auth(self, token: str, context) -> dict:
+    @staticmethod
+    def _client_kind(context) -> str:
+        if context is None:
+            return "cli"
+        try:
+            for item in context.invocation_metadata() or ():
+                key, value = (item.key, item.value) if hasattr(item, "key") else item
+                if key.lower() == "x-chat-client-kind" and value:
+                    return str(value).lower()
+        except Exception:
+            logger.debug("[AUTH] Client kind metadata was unavailable", exc_info=True)
+        return "cli"
+
+    def _require_auth(self, token: str, context, *, record_activity: bool = True) -> dict:
         if not token:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Missing session token")
         sess = self.auth.validate_token(token)
         if not sess:
+            self.presence.end_session(token)
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired session token")
-        if sess.get("status") != "active":
-            self.chat.publish_directory_changed_for_all()
+        if record_activity:
+            self.presence.note_rpc_activity(
+                sess["user_id"],
+                token,
+                sess["expires_at"],
+                self._client_kind(context),
+            )
         return sess
 
     # ── Authentication RPCs ───────────────────────────────────────────────────
 
     def Signup(self, request, context):
         logger.info("[RPC] Signup request for username: %s", request.username)
-        ok, token, uid, uname, msg = self.auth.signup(request.username, request.password)
-        if ok:
-            self.chat.publish_directory_changed_for_all()
+        ok, token, uid, uname, msg = self.auth.signup(
+            request.username, request.password, self._client_kind(context)
+        )
         return chat_pb2.SignupResponse(
             success=ok,
             token=token,
@@ -97,9 +116,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def Login(self, request, context):
         logger.info("[RPC] Login request for username: %s", request.username)
-        ok, token, uid, uname, msg = self.auth.login(request.username, request.password)
-        if ok:
-            self.chat.publish_directory_changed_for_all()
+        ok, token, uid, uname, msg = self.auth.login(
+            request.username, request.password, self._client_kind(context)
+        )
         return chat_pb2.LoginResponse(
             success=ok,
             token=token,
@@ -110,8 +129,6 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def Logout(self, request, context):
         ok = self.auth.logout(request.token)
-        if ok:
-            self.chat.publish_directory_changed_for_all()
         return chat_pb2.LogoutResponse(
             success=ok,
             message="Logged out successfully" if ok else "Invalid token or already logged out",
@@ -155,9 +172,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def UpdatePresence(self, request, context):
         sess = self._require_auth(request.token, context)
-        self.auth.update_status(sess["user_id"], request.status)
-        self.chat.publish_directory_changed_for_all()
-        return chat_pb2.UpdatePresenceResponse(success=True)
+        return chat_pb2.UpdatePresenceResponse(
+            success=self.presence.request_status(request.token, request.status)
+        )
 
     # ── 1-on-1 Direct Messaging RPCs ──────────────────────────────────────────
 
@@ -318,8 +335,12 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ── Server-Streaming Messages ─────────────────────────────────────────────
 
     def StreamMessages(self, request, context):
-        sess = self._require_auth(request.token, context)
+        sess = self._require_auth(request.token, context, record_activity=False)
         user_id = sess["user_id"]
+        stream_id = str(uuid.uuid4())
+        self.presence.connect_stream(
+            user_id, request.token, stream_id, sess["expires_at"]
+        )
         q = queue.Queue(maxsize=128)
         self.chat.subscribe(user_id, q)
         logger.info("[STREAM] User %s connected to event stream", sess["username"])
@@ -339,6 +360,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 if now - last_auth_check >= auth_check_interval:
                     last_auth_check = now
                     if not self.auth.token_is_valid(request.token):
+                        self.presence.end_session(request.token)
                         yield chat_pb2.MessageEvent(event_type="AUTH_EXPIRED")
                         return
 
@@ -359,6 +381,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     # Validate a session before delivering any queued data so a
                     # logout revokes access promptly, even with a busy stream.
                     if not self.auth.token_is_valid(request.token):
+                        self.presence.end_session(request.token)
                         yield chat_pb2.MessageEvent(event_type="AUTH_EXPIRED")
                         return
 
@@ -389,6 +412,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             logger.debug("[STREAM] Stream loop ended: %s", exc)
         finally:
             self.chat.unsubscribe(user_id, q)
+            self.presence.disconnect_stream(stream_id)
             logger.info("[STREAM] User %s disconnected from event stream", sess["username"])
 
     # ── File Sharing RPCs ─────────────────────────────────────────────────────
@@ -474,7 +498,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ── LLM Features (Passing Full Chat History) ──────────────────────────────
 
     def GetSmartReplies(self, request, context):
-        self._require_auth(request.token, context)
+        sess = self._require_auth(request.token, context)
         rid = request.request_id or str(uuid.uuid4())
 
         if not self.llm:
@@ -488,7 +512,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     chat_history=list(request.chat_history),
                     current_message=request.current_message,
                     context_title=request.context_title or "Chat",
-                )
+                ),
+                metadata=(("x-chat-current-user", sess.get("username", "you")),),
             )
             return chat_pb2.SmartReplyResponse(
                 request_id=resp.request_id,

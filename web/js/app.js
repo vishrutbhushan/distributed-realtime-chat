@@ -25,6 +25,7 @@ let directoryRefreshTimer = null;
 let historyAbortController = null;
 let historyRequestSequence = 0;
 let lastSmartReplyMsgId = null;
+let pageSuspended = false;
 
 function switchTab(mode) {
   authMode = mode;
@@ -73,6 +74,8 @@ async function logout() {
   if (historyAbortController) historyAbortController.abort();
   historyAbortController = null;
   historyRequestSequence += 1;
+  lastSmartReplyMsgId = null;
+  clearSmartReplySuggestions();
   if (directoryRefreshTimer) clearTimeout(directoryRefreshTimer);
   directoryRefreshTimer = null;
   directoryLoadPromise = null;
@@ -116,7 +119,7 @@ function startEventStream() {
 
 async function runEventStream(generation) {
   let retryMs = 1000;
-  while (currentUser && generation === eventGeneration) {
+  while (currentUser && !pageSuspended && generation === eventGeneration) {
     const controller = new AbortController();
     eventController = controller;
     const openedAt = Date.now();
@@ -163,7 +166,7 @@ async function runEventStream(generation) {
       if (eventController === controller) eventController = null;
     }
 
-    if (generation !== eventGeneration || !currentUser) return;
+    if (generation !== eventGeneration || !currentUser || pageSuspended) return;
     if (Date.now() - openedAt >= 30000) retryMs = 1000;
     const jitteredMs = Math.max(1000, Math.floor(retryMs * (0.75 + Math.random() * 0.5)));
     await new Promise(resolve => {
@@ -297,15 +300,22 @@ function mergeIntoCurrentMessages(messages) {
     .slice(-100);
 }
 
+function clearSmartReplySuggestions() {
+  const bar = document.getElementById("smart-replies-bar");
+  if (!bar) return;
+  bar.innerHTML = "";
+  bar.style.display = "none";
+}
+
 function maybeRequestSmartReplies(message) {
   if (!message || !currentUser) return;
   if (message.sender_id !== currentUser.user_id && message.message_id !== lastSmartReplyMsgId) {
     lastSmartReplyMsgId = message.message_id;
-    requestSmartReplies();
+    clearSmartReplySuggestions();
+    if (hasSmartReplyText(message)) requestSmartReplies(message.message_id);
   } else if (message.sender_id === currentUser.user_id) {
     lastSmartReplyMsgId = null;
-    const bar = document.getElementById("smart-replies-bar");
-    if (bar) bar.style.display = "none";
+    clearSmartReplySuggestions();
   }
 }
 
@@ -492,8 +502,7 @@ function renderGroupsList(groups) {
 
 function selectDM(u) {
   lastSmartReplyMsgId = null;
-  const bar = document.getElementById("smart-replies-bar");
-  if (bar) bar.style.display = "none";
+  clearSmartReplySuggestions();
   currentChat = { type: "DM", id: u.user_id, name: u.username, status: u.status };
   sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
   currentMessages = [];
@@ -515,8 +524,7 @@ function selectDM(u) {
 
 function selectGroup(g) {
   lastSmartReplyMsgId = null;
-  const bar = document.getElementById("smart-replies-bar");
-  if (bar) bar.style.display = "none";
+  clearSmartReplySuggestions();
   currentChat = { type: "GROUP", id: g.group_id, name: g.name, role: g.user_role, member_count: g.member_count };
   sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
   currentMessages = [];
@@ -618,8 +626,7 @@ async function loadMessages(options = {}) {
         maybeRequestSmartReplies(currentMessages[currentMessages.length - 1]);
       } else {
         lastSmartReplyMsgId = null;
-        const bar = document.getElementById("smart-replies-bar");
-        if (bar) bar.style.display = "none";
+        clearSmartReplySuggestions();
       }
     }
   } catch (e) {
@@ -727,8 +734,7 @@ async function sendMessage() {
         textInput.value = "";
         clearFileAttachment();
         lastSmartReplyMsgId = null;
-        const bar = document.getElementById("smart-replies-bar");
-        if (bar) bar.style.display = "none";
+        clearSmartReplySuggestions();
         if (data.message) {
           mergeIntoCurrentMessages([data.message]);
           renderMessages(currentMessages);
@@ -765,22 +771,38 @@ async function sendMessage() {
 }
 
 // AI LLM Features
-async function requestSmartReplies() {
+async function requestSmartReplies(messageId) {
   if (!currentChat || !currentUser) return;
-  const historyStrings = currentMessages.map(m => `${m.sender_username}: ${m.content}`);
-  const lastMsg = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1].content : "";
+  const chat = { ...currentChat };
+  const token = currentUser.token;
+  const chatKey = conversationKey(chat);
+  const messages = [...currentMessages];
+  const latestMessage = messages[messages.length - 1];
+  if (!latestMessage || latestMessage.message_id !== messageId || !String(latestMessage.content || "").trim()) return;
+
+  const requestIdentity = { token, chatKey, messageId };
+  const historyStrings = messages
+    .filter(m => String(m.content || "").trim())
+    .map(m => `${m.sender_username || "User"}: ${m.content}`);
+  const isStillCurrent = () => isSmartReplyRequestCurrent(requestIdentity, {
+    token: currentUser?.token,
+    chatKey: conversationKey(),
+    messageId: currentMessages[currentMessages.length - 1]?.message_id,
+  }) && lastSmartReplyMsgId === messageId;
 
   try {
     const data = await api.smartReplies(
-      currentUser.token,
-      currentChat.type,
-      currentChat.id,
+      token,
+      chat.type,
+      chat.id,
       historyStrings,
-      lastMsg,
-      currentChat.name
+      latestMessage.content,
+      chat.name
     );
-    if (data.success && data.suggestions && data.suggestions.length > 0) {
+    if (!isStillCurrent()) return;
+    if (data.success && Array.isArray(data.suggestions) && data.suggestions.length === 3) {
       const bar = document.getElementById("smart-replies-bar");
+      if (!bar) return;
       bar.innerHTML = "";
       data.suggestions.forEach(s => {
         const btn = document.createElement("button");
@@ -793,9 +815,14 @@ async function requestSmartReplies() {
         bar.appendChild(btn);
       });
       bar.style.display = "flex";
+    } else {
+      clearSmartReplySuggestions();
     }
   } catch (e) {
-    console.error("Smart replies error", e);
+    if (isStillCurrent()) {
+      clearSmartReplySuggestions();
+      console.error("Smart replies error", e);
+    }
   }
 }
 
@@ -1048,4 +1075,14 @@ if (document.readyState === "loading") {
 } else {
   initSession();
 }
+
+window.addEventListener("pagehide", () => {
+  pageSuspended = true;
+  stopEventStream();
+});
+
+window.addEventListener("pageshow", () => {
+  pageSuspended = false;
+  if (currentUser && !eventController) startEventStream();
+});
 
