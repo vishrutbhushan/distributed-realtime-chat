@@ -41,14 +41,58 @@ class ChatManager:
                     self._subs[user_id].remove(q)
                 except ValueError:
                     pass
+                if not self._subs[user_id]:
+                    del self._subs[user_id]
 
     def _notify_user(self, user_id: str, msg: dict):
+        """Publish one committed chat message to all sessions for a user."""
+        self.publish_event(user_id, "NEW_MESSAGE", msg)
+
+    def publish_event(self, user_id: str, event_type: str, message: Optional[dict] = None):
+        if not user_id:
+            return
+        event = {"event_type": event_type}
+        if message is not None:
+            event["message"] = message
         with self._sub_lock:
             for q in list(self._subs.get(user_id, [])):
                 try:
-                    q.put_nowait(msg)
+                    q.put_nowait(event)
                 except queue.Full:
-                    pass
+                    # A slow browser must get an explicit signal that its event
+                    # queue lost detail. Drain the stale entries and tell it to
+                    # reload authoritative snapshots.
+                    while True:
+                        try:
+                            q.get_nowait()
+                        except queue.Empty:
+                            break
+                    try:
+                        q.put_nowait({"event_type": "RESYNC_REQUIRED"})
+                    except queue.Full:
+                        logger.warning("[STREAM] Could not enqueue resync event for user %s", user_id)
+
+    def publish_directory_changed(self, user_ids):
+        for user_id in set(user_ids or []):
+            self.publish_event(user_id, "DIRECTORY_CHANGED")
+
+    def publish_directory_changed_for_all(self):
+        rows = self.db.fetchall("SELECT user_id FROM users")
+        self.publish_directory_changed(row["user_id"] for row in rows)
+
+    def subscription_count(self, user_id: Optional[str] = None) -> int:
+        """Expose a small read-only hook for stream lifecycle tests/diagnostics."""
+        with self._sub_lock:
+            if user_id is not None:
+                return len(self._subs.get(user_id, []))
+            return sum(len(subscribers) for subscribers in self._subs.values())
+
+    def is_group_member(self, group_id: str, user_id: str) -> bool:
+        row = self.db.fetchone(
+            "SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?",
+            (group_id, user_id),
+        )
+        return bool(row)
 
     # ── Read Receipts & Unread Tracking ───────────────────────────────────────
 
@@ -77,6 +121,9 @@ class ChatManager:
                 self.db.commit()
             except Exception as exc:
                 logger.error("[CHAT] mark_as_read error: %s", exc)
+                self.db.rollback()
+                return
+        self.publish_directory_changed([user_id])
 
     def get_dm_metadata_for_user(self, user_id: str) -> Dict[str, dict]:
         """
@@ -103,7 +150,7 @@ class ChatManager:
                         FROM messages m2
                         WHERE m2.chat_type = 'DM' 
                           AND ((m2.sender_id = ? AND m2.recipient_id = u.user_id) OR (m2.sender_id = u.user_id AND m2.recipient_id = ?))
-                        ORDER BY m2.timestamp DESC LIMIT 1
+                        ORDER BY m2.timestamp DESC, m2.message_id DESC LIMIT 1
                     ) AS last_message,
                     (
                         SELECT COUNT(*) FROM messages m3
@@ -157,7 +204,7 @@ class ChatManager:
                         END
                         FROM messages m2
                         WHERE m2.chat_type = 'GROUP' AND m2.group_id = g.group_id
-                        ORDER BY m2.timestamp DESC LIMIT 1
+                        ORDER BY m2.timestamp DESC, m2.message_id DESC LIMIT 1
                     ) AS last_message,
                     (
                         SELECT COUNT(*) FROM messages m3
@@ -224,7 +271,15 @@ class ChatManager:
                     return True, dict(existing), ""
 
             message_id = str(uuid.uuid4())
-            ts = int(time.time() * 1000)
+            latest = self.db.fetchone(
+                """
+                SELECT COALESCE(MAX(timestamp), 0) AS timestamp FROM messages
+                WHERE chat_type = 'DM' AND
+                  ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))
+                """,
+                (sender_id, recipient_id, recipient_id, sender_id),
+            )
+            ts = max(int(time.time() * 1000), int(latest["timestamp"] or 0) + 1)
 
             try:
                 self.db.execute(
@@ -306,7 +361,7 @@ class ChatManager:
                 WHERE m.chat_type = 'DM'
                   AND ((m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?))
                   AND m.timestamp < ?
-                ORDER BY m.timestamp DESC
+                ORDER BY m.timestamp DESC, m.message_id DESC
                 LIMIT ?
                 """,
                 (user_a, user_b, user_b, user_a, before_timestamp, limit),
@@ -320,7 +375,7 @@ class ChatManager:
                 LEFT JOIN files f ON m.file_id = f.file_id
                 WHERE m.chat_type = 'DM'
                   AND ((m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?))
-                ORDER BY m.timestamp DESC
+                ORDER BY m.timestamp DESC, m.message_id DESC
                 LIMIT ?
                 """,
                 (user_a, user_b, user_b, user_a, limit),
@@ -382,6 +437,10 @@ class ChatManager:
                 "member_count": added_count,
                 "user_role": "ADMIN",
             }
+            member_rows = self.db.fetchall(
+                "SELECT user_id FROM group_members WHERE group_id = ?", (group_id,)
+            )
+            self.publish_directory_changed(row["user_id"] for row in member_rows)
             logger.info("[CHAT] Created group '%s' (id=%s, members=%d)", name, group_id, added_count)
             return True, group_dict, "Group created successfully"
         except Exception as exc:
@@ -418,6 +477,11 @@ class ChatManager:
         is_admin = is_creator or (admin_check and admin_check["role"] == "ADMIN")
         if not is_admin:
             return False, {}, "Permission denied: Only group admins can perform this action"
+
+        old_members = self.db.fetchall(
+            "SELECT user_id FROM group_members WHERE group_id = ?", (group_id,)
+        )
+        old_member_ids = {row["user_id"] for row in old_members}
 
         now = int(time.time())
         action = action.upper()
@@ -487,6 +551,17 @@ class ChatManager:
                 "member_count": count_row["cnt"] if count_row else 1,
                 "user_role": "ADMIN",
             }
+            new_members = self.db.fetchall(
+                "SELECT user_id FROM group_members WHERE group_id = ?", (group_id,)
+            )
+            new_member_ids = {row["user_id"] for row in new_members}
+            if action == "REMOVE_MEMBER" and target_user_id not in new_member_ids:
+                self.publish_event(
+                    target_user_id,
+                    "GROUP_ACCESS_REVOKED",
+                    {"chat_type": "GROUP", "group_id": group_id},
+                )
+            self.publish_directory_changed(old_member_ids | new_member_ids)
             return True, updated_group, f"Group action '{action}' succeeded"
         except Exception as exc:
             self.db.rollback()
@@ -572,7 +647,11 @@ class ChatManager:
                     return True, dict(existing), ""
 
             message_id = str(uuid.uuid4())
-            ts = int(time.time() * 1000)
+            latest = self.db.fetchone(
+                "SELECT COALESCE(MAX(timestamp), 0) AS timestamp FROM messages WHERE chat_type = 'GROUP' AND group_id = ?",
+                (group_id,),
+            )
+            ts = max(int(time.time() * 1000), int(latest["timestamp"] or 0) + 1)
 
             try:
                 self.db.execute(
@@ -661,7 +740,7 @@ class ChatManager:
                 JOIN users u ON m.sender_id = u.user_id
                 LEFT JOIN files f ON m.file_id = f.file_id
                 WHERE m.chat_type = 'GROUP' AND m.group_id = ? AND m.timestamp < ?
-                ORDER BY m.timestamp DESC
+                ORDER BY m.timestamp DESC, m.message_id DESC
                 LIMIT ?
                 """,
                 (group_id, before_timestamp, limit),
@@ -674,7 +753,7 @@ class ChatManager:
                 JOIN users u ON m.sender_id = u.user_id
                 LEFT JOIN files f ON m.file_id = f.file_id
                 WHERE m.chat_type = 'GROUP' AND m.group_id = ?
-                ORDER BY m.timestamp DESC
+                ORDER BY m.timestamp DESC, m.message_id DESC
                 LIMIT ?
                 """,
                 (group_id, limit),

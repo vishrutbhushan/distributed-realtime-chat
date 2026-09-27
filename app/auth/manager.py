@@ -132,27 +132,45 @@ class AuthManager:
 
     def logout(self, token: str) -> bool:
         """
-        End user session and set user status to 'inactive'.
+        End this session. Keep the account active while another valid session
+        for the same user remains.
         """
-        row = self.db.fetchone("SELECT user_id FROM sessions WHERE token = ?", (token,))
-        if not row:
-            return False
-
-        user_id = row["user_id"]
         now = int(time.time())
-        try:
-            self.db.execute("DELETE FROM sessions WHERE token = ?", (token,))
-            self.db.execute(
-                "UPDATE users SET status = 'inactive', last_seen = ? WHERE user_id = ?",
-                (now, user_id),
-            )
-            self.db.commit()
-            logger.info("[AUTH] User logged out (user_id=%s, status=inactive)", user_id)
-            return True
-        except Exception as exc:
-            self.db.rollback()
-            logger.error("[AUTH] Logout error: %s", exc)
+        with self.db.lock:
+            row = self.db.fetchone("SELECT user_id FROM sessions WHERE token = ?", (token,))
+            if not row:
+                return False
+
+            user_id = row["user_id"]
+            try:
+                self.db.execute("DELETE FROM sessions WHERE token = ?", (token,))
+                active_session = self.db.fetchone(
+                    "SELECT 1 FROM sessions WHERE user_id = ? AND expires_at > ? LIMIT 1",
+                    (user_id, now),
+                )
+                status = "active" if active_session else "inactive"
+                self.db.execute(
+                    "UPDATE users SET status = ?, last_seen = ? WHERE user_id = ?",
+                    (status, now, user_id),
+                )
+                self.db.commit()
+                logger.info("[AUTH] User logged out (user_id=%s, status=%s)", user_id, status)
+                return True
+            except Exception as exc:
+                self.db.rollback()
+                logger.error("[AUTH] Logout error: %s", exc)
+                return False
+
+    def token_is_valid(self, token: str) -> bool:
+        """Check session validity without treating a long-lived stream as activity."""
+        if not token:
             return False
+        now = int(time.time())
+        row = self.db.fetchone(
+            "SELECT 1 FROM sessions WHERE token = ? AND expires_at > ?",
+            (token, now),
+        )
+        return bool(row)
 
     def validate_token(self, token: str) -> Optional[dict]:
         """
@@ -175,7 +193,8 @@ class AuthManager:
         # Refresh last seen and ensure status is active (throttled to at most once per 10s)
         try:
             self.db.execute(
-                "UPDATE users SET last_seen = ?, status = 'active' WHERE user_id = ? AND last_seen < ?",
+                "UPDATE users SET last_seen = ?, status = 'active' "
+                "WHERE user_id = ? AND (last_seen < ? OR status != 'active')",
                 (now, row["user_id"], now - 10),
             )
             self.db.commit()

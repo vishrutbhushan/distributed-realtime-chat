@@ -11,6 +11,9 @@ import email.policy
 import json
 import logging
 import os
+import queue
+import select
+import socket
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,6 +30,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 class WebGatewayHandler(BaseHTTPRequestHandler):
 
     grpc_stub: chat_pb2_grpc.ChatServiceStub = None
+    stream_stub: chat_pb2_grpc.ChatServiceStub = None
 
     def _send_json(self, status_code: int, data: dict):
         body = json.dumps(data).encode("utf-8")
@@ -81,6 +85,12 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             return
 
         token = qs.get("token", [""])[0]
+
+        # GET /api/events keeps one browser connection open and forwards the
+        # existing server-streaming gRPC RPC as Server-Sent Events.
+        if path == "/api/events":
+            self._serve_event_stream(token)
+            return
 
         # GET /api/users
         if path == "/api/users":
@@ -194,6 +204,113 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             return
 
         self.send_error(404, "Endpoint not found")
+
+    def _serve_event_stream(self, token: str):
+        stream = None
+        try:
+            if not token:
+                self._send_json(401, {"success": False, "error": "Missing session token"})
+                return
+
+            stream = self.stream_stub.StreamMessages(
+                chat_pb2.StreamMessagesRequest(token=token)
+            )
+            # StreamMessages sends READY only after auth and subscription setup.
+            # Fetching this first event lets invalid tokens receive a normal
+            # HTTP response before the SSE headers are committed.
+            first_event = next(stream)
+        except StopIteration:
+            self._send_json(503, {"success": False, "error": "Event stream ended during setup"})
+            return
+        except grpc.RpcError as exc:
+            status = 401 if exc.code() == grpc.StatusCode.UNAUTHENTICATED else 503
+            self._send_json(status, {"success": False, "error": exc.details() or "Event stream unavailable"})
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        event_queue = queue.Queue(maxsize=128)
+        client_closed = threading.Event()
+        stream_finished = threading.Event()
+
+        def relay_grpc_events():
+            try:
+                for event in stream:
+                    if client_closed.is_set():
+                        break
+                    try:
+                        event_queue.put_nowait(event)
+                    except queue.Full:
+                        while True:
+                            try:
+                                event_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                        try:
+                            event_queue.put_nowait(
+                                chat_pb2.MessageEvent(event_type="RESYNC_REQUIRED")
+                            )
+                        except queue.Full:
+                            logger.warning("[WEB] Could not enqueue stream resync marker")
+            except grpc.RpcError as exc:
+                logger.debug("[WEB] Event gRPC stream ended: %s", exc.details())
+            finally:
+                stream_finished.set()
+
+        relay = threading.Thread(
+            target=relay_grpc_events,
+            daemon=True,
+            name="sse-grpc-relay",
+        )
+        relay.start()
+        try:
+            self._write_sse_event(first_event)
+            while not stream_finished.is_set() or not event_queue.empty():
+                if self._client_disconnected():
+                    break
+                try:
+                    event = event_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                self._write_sse_event(event)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            # Expected when a tab closes or its fetch stream is aborted.
+            pass
+        finally:
+            client_closed.set()
+            if stream is not None:
+                stream.cancel()
+            relay.join(timeout=1)
+
+    def _client_disconnected(self) -> bool:
+        """Detect a closed browser socket even when no SSE data is arriving."""
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            if not readable:
+                return False
+            return self.connection.recv(1, socket.MSG_PEEK) == b""
+        except (BlockingIOError, InterruptedError):
+            return False
+        except OSError:
+            return True
+
+    def _write_sse_event(self, event):
+        event_type = event.event_type or "RESYNC_REQUIRED"
+        payload = {}
+        if event_type == "NEW_MESSAGE" and event.HasField("message"):
+            payload["message"] = self._msg_to_dict(event.message)
+        elif event_type == "GROUP_ACCESS_REVOKED" and event.HasField("message"):
+            payload["group_id"] = event.message.group_id
+        encoded = json.dumps(payload, separators=(",", ":"))
+        frame = f"event: {event_type}\ndata: {encoded}\n\n".encode("utf-8")
+        self.wfile.write(frame)
+        self.wfile.flush()
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -522,11 +639,18 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
         pass
 
 
-def run_web_gateway(port: int, grpc_target: str) -> ThreadingHTTPServer:
+def run_web_gateway(
+    port: int,
+    grpc_target: str,
+    stream_grpc_target: str = None,
+) -> ThreadingHTTPServer:
     """Run the threaded HTTP Web Gateway server."""
     channel = grpc.insecure_channel(grpc_target)
+    stream_channel = grpc.insecure_channel(stream_grpc_target or grpc_target)
     WebGatewayHandler.grpc_stub = chat_pb2_grpc.ChatServiceStub(channel)
+    WebGatewayHandler.stream_stub = chat_pb2_grpc.ChatServiceStub(stream_channel)
     httpd = ThreadingHTTPServer(("0.0.0.0", port), WebGatewayHandler)
+    httpd.grpc_channels = (channel, stream_channel)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="web-gateway")
     thread.start()
     logger.info("[WEB] Web Gateway running on http://0.0.0.0:%d", port)

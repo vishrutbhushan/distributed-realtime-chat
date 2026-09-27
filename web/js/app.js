@@ -10,7 +10,20 @@ let cachedUsers = [];
 let cachedGroups = [];
 let currentMessages = [];
 let pendingFile = null;
-let pollInterval = null;
+let eventController = null;
+let eventGeneration = 0;
+let reconnectTimer = null;
+let reconnectResolver = null;
+let reconnectBaseMs = 1000;
+let snapshotInProgress = false;
+let anotherSnapshotRequested = false;
+let resyncAfterSnapshot = false;
+let bufferedStreamEvents = [];
+let directoryLoadPromise = null;
+let directoryDirtyDuringLoad = false;
+let directoryRefreshTimer = null;
+let historyAbortController = null;
+let historyRequestSequence = 0;
 let lastSmartReplyMsgId = null;
 
 function switchTab(mode) {
@@ -39,7 +52,7 @@ async function submitAuth() {
       sessionStorage.setItem("chat_session", JSON.stringify(currentUser));
       document.getElementById("auth-container").style.display = "none";
       document.getElementById("current-username").innerText = data.username;
-      startPolling();
+      startEventStream();
     } else {
       err.innerText = data.message || "Authentication failed.";
     }
@@ -56,9 +69,21 @@ async function logout() {
   }
   sessionStorage.removeItem("chat_session");
   sessionStorage.removeItem("chat_current_chat");
+  stopEventStream();
+  if (historyAbortController) historyAbortController.abort();
+  historyAbortController = null;
+  historyRequestSequence += 1;
+  if (directoryRefreshTimer) clearTimeout(directoryRefreshTimer);
+  directoryRefreshTimer = null;
+  directoryLoadPromise = null;
+  directoryDirtyDuringLoad = false;
   currentUser = null;
   currentChat = null;
-  if (pollInterval) clearInterval(pollInterval);
+  currentMessages = [];
+  cachedUsers = [];
+  cachedGroups = [];
+  renderUsersList(cachedUsers);
+  renderGroupsList(cachedGroups);
   document.getElementById("auth-container").style.display = "flex";
   document.getElementById("auth-password").value = "";
   document.getElementById("chat-title").innerText = "Select a conversation";
@@ -68,64 +93,318 @@ async function logout() {
   document.getElementById("messages-container").innerHTML = `<div class="empty-chat">Select a user or group from the sidebar to start chatting.</div>`;
 }
 
-function startPolling() {
-  loadDirectory();
-  if (pollInterval) clearInterval(pollInterval);
-  pollInterval = setInterval(() => {
-    loadDirectory(true);
-    if (currentChat) loadMessages(true);
-  }, 2000);
+function stopEventStream() {
+  eventGeneration += 1;
+  if (eventController) eventController.abort();
+  eventController = null;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  if (reconnectResolver) reconnectResolver();
+  reconnectResolver = null;
+  snapshotInProgress = false;
+  anotherSnapshotRequested = false;
+  resyncAfterSnapshot = false;
+  bufferedStreamEvents = [];
 }
 
-async function loadDirectory(background = false) {
-  if (!currentUser) return;
-  try {
-    const [uResp, gResp] = await Promise.all([
-      api.getUsers(currentUser.token),
-      api.getGroups(currentUser.token),
-    ]);
+function startEventStream() {
+  stopEventStream();
+  const generation = eventGeneration;
+  reconnectBaseMs = 1000;
+  runEventStream(generation);
+}
 
-    // If unauthorized or token expired, reset session cleanly
-    if ((!uResp.success && (uResp.error?.includes("token") || uResp.error?.includes("UNAUTHENTICATED"))) ||
-        (!gResp.success && (gResp.error?.includes("token") || gResp.error?.includes("UNAUTHENTICATED")))) {
-      logout();
+async function runEventStream(generation) {
+  let retryMs = 1000;
+  while (currentUser && generation === eventGeneration) {
+    const controller = new AbortController();
+    eventController = controller;
+    const openedAt = Date.now();
+    let readyReceived = false;
+
+    try {
+      const response = await fetch(api.eventStreamUrl(currentUser.token), {
+        method: "GET",
+        headers: { Accept: "text/event-stream" },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (response.status === 401) {
+        if (generation === eventGeneration) await logout();
+        return;
+      }
+      if (!response.ok || !response.body) {
+        throw new Error(`Event stream returned HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (generation === eventGeneration) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+        let boundary;
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const event = parseSseFrame(frame);
+          if (!event) continue;
+          if (event.type === "READY") readyReceived = true;
+          handleRealtimeEvent(event.type, event.data, generation);
+        }
+      }
+      if (generation !== eventGeneration) return;
+      if (!readyReceived) throw new Error("Event stream closed before READY");
+    } catch (e) {
+      if (generation !== eventGeneration || e.name === "AbortError") return;
+      console.warn("Event stream disconnected; reconnecting", e);
+    } finally {
+      if (eventController === controller) eventController = null;
+    }
+
+    if (generation !== eventGeneration || !currentUser) return;
+    if (Date.now() - openedAt >= 30000) retryMs = 1000;
+    const jitteredMs = Math.max(1000, Math.floor(retryMs * (0.75 + Math.random() * 0.5)));
+    await new Promise(resolve => {
+      reconnectResolver = resolve;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        reconnectResolver = null;
+        resolve();
+      }, jitteredMs);
+    });
+    retryMs = Math.min(30000, Math.round(retryMs * 1.8));
+  }
+}
+
+function parseSseFrame(frame) {
+  let type = "message";
+  const dataLines = [];
+  for (const line of frame.split("\n")) {
+    if (!line || line.startsWith(":")) continue;
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    const value = separator === -1 ? "" : line.slice(separator + 1).replace(/^ /, "");
+    if (field === "event") type = value;
+    else if (field === "data") dataLines.push(value);
+  }
+  if (dataLines.length === 0) return null;
+  try {
+    return { type, data: JSON.parse(dataLines.join("\n")) };
+  } catch (e) {
+    console.warn("Ignoring malformed event stream frame", e);
+    return null;
+  }
+}
+
+function handleRealtimeEvent(type, data, generation) {
+  if (generation !== eventGeneration) return;
+  if (type === "READY") {
+    if (snapshotInProgress) {
+      anotherSnapshotRequested = true;
       return;
     }
+    beginSnapshotReconciliation(generation);
+    return;
+  }
+  if (type === "HEARTBEAT") return;
+  if (type === "AUTH_EXPIRED") {
+    logout();
+    return;
+  }
+  if (type === "GROUP_ACCESS_REVOKED") {
+    if (currentChat && currentChat.type === "GROUP" && currentChat.id === data?.group_id) {
+      clearSelectedConversation("Your access to this group was removed.");
+    }
+    requestDirectoryRefresh();
+    return;
+  }
+  if (snapshotInProgress) {
+    if (type === "RESYNC_REQUIRED") resyncAfterSnapshot = true;
+    else bufferedStreamEvents.push({ type, data });
+    return;
+  }
+  if (type === "RESYNC_REQUIRED") {
+    beginSnapshotReconciliation(generation);
+    return;
+  }
+  applyRealtimeEvent(type, data);
+}
 
-    if (uResp.success) {
-      cachedUsers = uResp.users;
-      if (currentChat && currentChat.type === "DM") {
-        const u = cachedUsers.find(x => x.user_id === currentChat.id);
-        if (u) {
-          u.unread_count = 0;
-          if (u.status !== currentChat.status) {
-            currentChat.status = u.status;
-            sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
-            updateChatHeader();
-          }
+function beginSnapshotReconciliation(generation) {
+  if (snapshotInProgress || generation !== eventGeneration) return;
+  snapshotInProgress = true;
+  bufferedStreamEvents = [];
+  const tasks = [loadDirectory()];
+  if (currentChat) tasks.push(loadMessages({ snapshot: true }));
+
+  Promise.all(tasks).finally(() => {
+    if (generation !== eventGeneration) return;
+    const buffered = bufferedStreamEvents;
+    const repeat = anotherSnapshotRequested || resyncAfterSnapshot ||
+      buffered.some(event => event.type === "RESYNC_REQUIRED");
+    snapshotInProgress = false;
+    anotherSnapshotRequested = false;
+    resyncAfterSnapshot = false;
+    bufferedStreamEvents = [];
+    buffered.forEach(event => {
+      if (event.type !== "RESYNC_REQUIRED") applyRealtimeEvent(event.type, event.data);
+    });
+    if (repeat) beginSnapshotReconciliation(generation);
+  });
+}
+
+function applyRealtimeEvent(type, data) {
+  if (type === "DIRECTORY_CHANGED") {
+    requestDirectoryRefresh();
+    return;
+  }
+  if (type !== "NEW_MESSAGE" || !data?.message) return;
+
+  const message = data.message;
+  requestDirectoryRefresh();
+  const key = conversationKeyForMessage(message);
+  if (key !== conversationKey()) return;
+
+  mergeIntoCurrentMessages([message]);
+  renderMessages(currentMessages);
+  maybeRequestSmartReplies(message);
+  if (message.sender_id !== currentUser.user_id && currentChat) {
+    api.markRead(currentUser.token, currentChat.type, currentChat.id).catch(() => {});
+  }
+}
+
+function conversationKey(chat = currentChat) {
+  return chat ? `${chat.type}:${chat.id}` : "";
+}
+
+function conversationKeyForMessage(message) {
+  if (message.chat_type === "GROUP") return `GROUP:${message.group_id}`;
+  const otherUserId = message.sender_id === currentUser?.user_id
+    ? message.recipient_id
+    : message.sender_id;
+  return `DM:${otherUserId}`;
+}
+
+function mergeIntoCurrentMessages(messages) {
+  const byId = new Map(currentMessages.map(message => [message.message_id, message]));
+  messages.forEach(message => {
+    if (message?.message_id) byId.set(message.message_id, { ...byId.get(message.message_id), ...message });
+  });
+  currentMessages = [...byId.values()]
+    .sort((a, b) => (a.timestamp - b.timestamp) || a.message_id.localeCompare(b.message_id))
+    .slice(-100);
+}
+
+function maybeRequestSmartReplies(message) {
+  if (!message || !currentUser) return;
+  if (message.sender_id !== currentUser.user_id && message.message_id !== lastSmartReplyMsgId) {
+    lastSmartReplyMsgId = message.message_id;
+    requestSmartReplies();
+  } else if (message.sender_id === currentUser.user_id) {
+    lastSmartReplyMsgId = null;
+    const bar = document.getElementById("smart-replies-bar");
+    if (bar) bar.style.display = "none";
+  }
+}
+
+function clearSelectedConversation(message) {
+  if (historyAbortController) historyAbortController.abort();
+  historyAbortController = null;
+  historyRequestSequence += 1;
+  currentChat = null;
+  currentMessages = [];
+  sessionStorage.removeItem("chat_current_chat");
+  document.getElementById("chat-title").innerText = "Select a conversation";
+  document.getElementById("chat-subtitle").innerText = message || "Choose a user or group to start collaborating";
+  document.getElementById("chat-actions").style.display = "none";
+  document.getElementById("input-area").style.display = "none";
+  document.getElementById("messages-container").innerHTML =
+    `<div class="empty-chat">${escapeHtml(message || "Select a user or group from the sidebar to start chatting.")}</div>`;
+  renderUsersList(cachedUsers);
+  renderGroupsList(cachedGroups);
+}
+
+function requestDirectoryRefresh() {
+  if (directoryRefreshTimer) return;
+  directoryRefreshTimer = setTimeout(() => {
+    directoryRefreshTimer = null;
+    loadDirectory();
+  }, 40);
+}
+
+async function loadDirectory() {
+  if (!currentUser) return;
+  if (directoryLoadPromise) {
+    directoryDirtyDuringLoad = true;
+    return directoryLoadPromise;
+  }
+
+  const token = currentUser.token;
+  const loadPromise = (async () => {
+    do {
+      directoryDirtyDuringLoad = false;
+      try {
+        const [uResp, gResp] = await Promise.all([
+          api.getUsers(token),
+          api.getGroups(token),
+        ]);
+
+        if (currentUser?.token !== token) return;
+        // If unauthorized or token expired, reset session cleanly.
+        if ((!uResp.success && (uResp.error?.includes("token") || uResp.error?.includes("UNAUTHENTICATED"))) ||
+            (!gResp.success && (gResp.error?.includes("token") || gResp.error?.includes("UNAUTHENTICATED")))) {
+          logout();
+          return;
         }
-      }
-      renderUsersList(cachedUsers);
-    }
-    if (gResp.success) {
-      cachedGroups = gResp.groups;
-      if (currentChat && currentChat.type === "GROUP") {
-        const g = cachedGroups.find(x => x.group_id === currentChat.id);
-        if (g) {
-          g.unread_count = 0;
-          if (g.name !== currentChat.name || g.member_count !== currentChat.member_count || g.user_role !== currentChat.role) {
-            currentChat.name = g.name;
-            currentChat.member_count = g.member_count;
-            currentChat.role = g.user_role;
-            sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
-            updateChatHeader();
+
+        if (uResp.success) {
+          cachedUsers = uResp.users;
+          if (currentChat && currentChat.type === "DM") {
+            const u = cachedUsers.find(x => x.user_id === currentChat.id);
+            if (u) {
+              u.unread_count = 0;
+              if (u.status !== currentChat.status) {
+                currentChat.status = u.status;
+                sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+                updateChatHeader();
+              }
+            }
           }
+          renderUsersList(cachedUsers);
         }
+
+        if (gResp.success) {
+          cachedGroups = gResp.groups;
+          if (currentChat && currentChat.type === "GROUP") {
+            const g = cachedGroups.find(x => x.group_id === currentChat.id);
+            if (!g) {
+              clearSelectedConversation("Your access to this group was removed.");
+            } else {
+              g.unread_count = 0;
+              if (g.name !== currentChat.name || g.member_count !== currentChat.member_count || g.user_role !== currentChat.role) {
+                currentChat.name = g.name;
+                currentChat.member_count = g.member_count;
+                currentChat.role = g.user_role;
+                sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+                updateChatHeader();
+              }
+            }
+          }
+          renderGroupsList(cachedGroups);
+        }
+      } catch (e) {
+        console.error("Directory load error", e);
       }
-      renderGroupsList(cachedGroups);
-    }
-  } catch (e) {
-    console.error("Directory load error", e);
+
+    } while (directoryDirtyDuringLoad && currentUser?.token === token);
+  })();
+  directoryLoadPromise = loadPromise;
+  try {
+    await loadPromise;
+  } finally {
+    if (directoryLoadPromise === loadPromise) directoryLoadPromise = null;
   }
 }
 
@@ -217,6 +496,8 @@ function selectDM(u) {
   if (bar) bar.style.display = "none";
   currentChat = { type: "DM", id: u.user_id, name: u.username, status: u.status };
   sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+  currentMessages = [];
+  renderMessages(currentMessages);
 
   // Instantly clear unread count locally for instant UI update
   u.unread_count = 0;
@@ -238,6 +519,8 @@ function selectGroup(g) {
   if (bar) bar.style.display = "none";
   currentChat = { type: "GROUP", id: g.group_id, name: g.name, role: g.user_role, member_count: g.member_count };
   sessionStorage.setItem("chat_current_chat", JSON.stringify(currentChat));
+  currentMessages = [];
+  renderMessages(currentMessages);
 
   // Instantly clear unread count locally for instant UI update
   g.unread_count = 0;
@@ -284,24 +567,36 @@ function updateChatHeader() {
   renderGroupsList(cachedGroups);
 }
 
-async function loadMessages(background = false) {
+async function loadMessages(options = {}) {
   if (!currentChat || !currentUser) return;
+  const chat = { ...currentChat };
+  const key = conversationKey(chat);
+  const token = currentUser.token;
+  if (historyAbortController) historyAbortController.abort();
+  const controller = new AbortController();
+  historyAbortController = controller;
+  const requestSequence = ++historyRequestSequence;
+
   try {
-    const data = currentChat.type === "DM"
-      ? await api.getDMs(currentUser.token, currentChat.id)
-      : await api.getGroupMessages(currentUser.token, currentChat.id);
+    const data = chat.type === "DM"
+      ? await api.getDMs(token, chat.id, controller.signal)
+      : await api.getGroupMessages(token, chat.id, controller.signal);
+
+    if (controller.signal.aborted || requestSequence !== historyRequestSequence ||
+        currentUser?.token !== token || conversationKey() !== key) return;
 
     if (data.success) {
-      const oldLen = currentMessages.length;
-      currentMessages = data.messages || [];
-      if (!background || currentMessages.length !== oldLen) {
-        renderMessages(currentMessages);
-      }
+      // Merge the authoritative latest-100 snapshot with any live events that
+      // arrived while it was in flight. Message IDs make the merge idempotent.
+      const liveMessages = currentMessages;
+      currentMessages = [];
+      mergeIntoCurrentMessages([...(data.messages || []), ...liveMessages]);
+      renderMessages(currentMessages);
 
       if (currentMessages.length > 0) {
         const latest = currentMessages[currentMessages.length - 1];
-        if (currentChat.type === "DM") {
-          const u = cachedUsers.find(x => x.user_id === currentChat.id);
+        if (chat.type === "DM") {
+          const u = cachedUsers.find(x => x.user_id === chat.id);
           if (u && (u.last_message_time !== latest.timestamp || u.unread_count !== 0)) {
             u.last_message_time = latest.timestamp;
             u.last_message = latest.content || (latest.file_id ? '[File Attachment]' : '');
@@ -309,7 +604,7 @@ async function loadMessages(background = false) {
             renderUsersList(cachedUsers);
           }
         } else {
-          const g = cachedGroups.find(x => x.group_id === currentChat.id);
+          const g = cachedGroups.find(x => x.group_id === chat.id);
           if (g && (g.last_message_time !== latest.timestamp || g.unread_count !== 0)) {
             g.last_message_time = latest.timestamp;
             g.last_message = latest.content || (latest.file_id ? '[File Attachment]' : '');
@@ -319,19 +614,8 @@ async function loadMessages(background = false) {
         }
       }
 
-      // Automatically display smart replies always when the last message is not from currentUser
       if (currentMessages.length > 0) {
-        const lastMsg = currentMessages[currentMessages.length - 1];
-        if (lastMsg.sender_id !== currentUser.user_id) {
-          if (lastMsg.message_id !== lastSmartReplyMsgId) {
-            lastSmartReplyMsgId = lastMsg.message_id;
-            requestSmartReplies();
-          }
-        } else {
-          lastSmartReplyMsgId = null;
-          const bar = document.getElementById("smart-replies-bar");
-          if (bar) bar.style.display = "none";
-        }
+        maybeRequestSmartReplies(currentMessages[currentMessages.length - 1]);
       } else {
         lastSmartReplyMsgId = null;
         const bar = document.getElementById("smart-replies-bar");
@@ -339,7 +623,9 @@ async function loadMessages(background = false) {
       }
     }
   } catch (e) {
-    console.error("Messages load error", e);
+    if (e.name !== "AbortError") console.error("Messages load error", e);
+  } finally {
+    if (historyAbortController === controller) historyAbortController = null;
   }
 }
 
@@ -405,6 +691,10 @@ function clearFileAttachment() {
 
 async function sendMessage() {
   if (!currentChat || !currentUser) return;
+  const chat = { ...currentChat };
+  const chatKey = conversationKey(chat);
+  const token = currentUser.token;
+  const outgoingFile = pendingFile;
   const textInput = document.getElementById("message-input");
   const content = textInput.value.trim();
 
@@ -412,9 +702,9 @@ async function sendMessage() {
 
   let fileId = "";
   // Upload file first if attached
-  if (pendingFile) {
+  if (outgoingFile) {
     try {
-      const upData = await api.uploadFile(currentUser.token, currentChat.type, currentChat.id, pendingFile);
+      const upData = await api.uploadFile(token, chat.type, chat.id, outgoingFile);
       if (upData.success) {
         fileId = upData.file.file_id;
       } else {
@@ -428,21 +718,27 @@ async function sendMessage() {
   }
 
   try {
-    const data = currentChat.type === "DM"
-      ? await api.sendDM(currentUser.token, currentChat.id, content, fileId)
-      : await api.sendGroupMessage(currentUser.token, currentChat.id, content, fileId);
+    const data = chat.type === "DM"
+      ? await api.sendDM(token, chat.id, content, fileId)
+      : await api.sendGroupMessage(token, chat.id, content, fileId);
 
     if (data.success) {
-      textInput.value = "";
-      clearFileAttachment();
-      lastSmartReplyMsgId = null;
-      const bar = document.getElementById("smart-replies-bar");
-      if (bar) bar.style.display = "none";
+      if (conversationKey() === chatKey) {
+        textInput.value = "";
+        clearFileAttachment();
+        lastSmartReplyMsgId = null;
+        const bar = document.getElementById("smart-replies-bar");
+        if (bar) bar.style.display = "none";
+        if (data.message) {
+          mergeIntoCurrentMessages([data.message]);
+          renderMessages(currentMessages);
+        }
+      }
 
       const now = Date.now();
       const previewText = content || (fileId ? '[File Attachment]' : '');
-      if (currentChat.type === "DM") {
-        const u = cachedUsers.find(x => x.user_id === currentChat.id);
+      if (chat.type === "DM") {
+        const u = cachedUsers.find(x => x.user_id === chat.id);
         if (u) {
           u.last_message_time = now;
           u.last_message = previewText;
@@ -450,7 +746,7 @@ async function sendMessage() {
           renderUsersList(cachedUsers);
         }
       } else {
-        const g = cachedGroups.find(x => x.group_id === currentChat.id);
+        const g = cachedGroups.find(x => x.group_id === chat.id);
         if (g) {
           g.last_message_time = now;
           g.last_message = previewText;
@@ -459,7 +755,7 @@ async function sendMessage() {
         }
       }
 
-      loadMessages();
+      requestDirectoryRefresh();
     } else {
       alert(data.error || "Failed to send message");
     }
@@ -511,7 +807,7 @@ async function requestSummarize() {
   let historyStrings = currentMessages.map(m => `${m.sender_username || "User"}: ${m.content || ""}`).filter(s => s.trim().length > 0);
   if (historyStrings.length === 0) {
     try {
-      await loadMessages(true);
+      await loadMessages({ snapshot: true });
       historyStrings = currentMessages.map(m => `${m.sender_username || "User"}: ${m.content || ""}`).filter(s => s.trim().length > 0);
     } catch (_) {}
   }
@@ -731,13 +1027,12 @@ function initSession() {
           try {
             currentChat = JSON.parse(savedChat);
             updateChatHeader();
-            loadMessages();
           } catch (e) {
             currentChat = null;
           }
         }
 
-        startPolling();
+        startEventStream();
         return;
       }
     } catch (e) {

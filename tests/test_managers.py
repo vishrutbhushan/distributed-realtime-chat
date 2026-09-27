@@ -53,7 +53,7 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("already exists", msg)
 
     def test_login_logout_and_active_status(self):
-        self.auth.signup("alice", "pass1234")
+        _, signup_token, user_id, _, _ = self.auth.signup("alice", "pass1234")
         ok, token, user_id, uname, msg = self.auth.login("alice", "pass1234")
         self.assertTrue(ok)
 
@@ -63,6 +63,11 @@ class ManagerTests(unittest.TestCase):
 
         # Logout sets status to inactive
         self.auth.logout(token)
+        user = self.auth.get_user_by_id(user_id)
+        self.assertEqual(user["status"], "active")
+
+        # The signup session is still active; presence changes after the final logout.
+        self.auth.logout(signup_token)
         user = self.auth.get_user_by_id(user_id)
         self.assertEqual(user["status"], "inactive")
 

@@ -46,6 +46,7 @@ services:
     environment:
       NODE_ID:           "node-1"
       PORT:              "50051"
+      STREAM_PORT:       "50052" # Internal loopback-only event stream listener; not published to the host
       WEB_PORT:          "8000"
       DB_PATH:           "/data/chat.db"
       FILE_STORAGE_PATH: "/data/files/"

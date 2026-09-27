@@ -134,6 +134,12 @@ distributed-realtime-chat/
    - **Smart Replies**: Suggests 3 one-click replies based on the entire chat history.
    - **Summarize**: Generates an intelligent summary modal of the whole discussion.
 
+### Live updates
+
+Each signed-in browser tab opens one authenticated `GET /api/events` Server-Sent Events connection. The Python web gateway adapts the existing `StreamMessages` gRPC stream to the browser; Python service-to-service communication remains gRPC, and the protobuf definitions are unchanged. Browser tabs load directory and selected-chat snapshots when the stream connects or reconnects, and reload after an explicit resynchronization event. They do not repeatedly poll users, groups, or history while idle.
+
+The application keeps browser streams on an internal loopback-only gRPC listener (`50052`) with a separate pool capped at 32 streams. That listener is not published to the host. Unary gRPC calls continue to use the existing `50051` listener and its worker pool.
+
 ---
 
 ## 5. Build-Time Static Self-Tests
@@ -141,4 +147,5 @@ distributed-realtime-chat/
 Only static tests run at Docker build time to guarantee system correctness without running runtime test scripts:
 - **`tests/test_managers.py`**: Validates user signup restrictions, session TTL, DM messaging, group creation with admin controls, file upload/download, and concurrent retry idempotency.
 - **`tests/test_llm_inference.py`**: Validates chat context bounding, prompt construction, and graceful fallback.
+- **`tests/test_realtime_events.py`**: Validates message event delivery, stream cleanup, expired sessions, bounded-queue resynchronization, group-access revocation, and multi-session presence.
 - Executed during `docker compose build` in both `Dockerfile.app` and `Dockerfile.llm`. If any test fails, the image build aborts immediately.

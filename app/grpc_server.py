@@ -31,6 +31,9 @@ from storage.database import Database
 
 logger = logging.getLogger(__name__)
 
+STREAM_AUTH_CHECK_INTERVAL_SECONDS = 5.0
+STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
+
 
 def create_llm_stub(llm_server_addr: str):
     """Create a gRPC stub to the local LLM server."""
@@ -56,7 +59,10 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         self.node_id = node_id
         self.auth = AuthManager(db)
         self.chat = ChatManager(db)
-        self.presence = PresenceManager(db)
+        self.presence = PresenceManager(
+            db,
+            on_presence_change=lambda _user_ids: self.chat.publish_directory_changed_for_all(),
+        )
         self.files = FileManager(db, file_storage_path)
         self.llm = create_llm_stub(llm_server_addr)
 
@@ -70,6 +76,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         sess = self.auth.validate_token(token)
         if not sess:
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired session token")
+        if sess.get("status") != "active":
+            self.chat.publish_directory_changed_for_all()
         return sess
 
     # ── Authentication RPCs ───────────────────────────────────────────────────
@@ -77,6 +85,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def Signup(self, request, context):
         logger.info("[RPC] Signup request for username: %s", request.username)
         ok, token, uid, uname, msg = self.auth.signup(request.username, request.password)
+        if ok:
+            self.chat.publish_directory_changed_for_all()
         return chat_pb2.SignupResponse(
             success=ok,
             token=token,
@@ -88,6 +98,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def Login(self, request, context):
         logger.info("[RPC] Login request for username: %s", request.username)
         ok, token, uid, uname, msg = self.auth.login(request.username, request.password)
+        if ok:
+            self.chat.publish_directory_changed_for_all()
         return chat_pb2.LoginResponse(
             success=ok,
             token=token,
@@ -98,6 +110,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def Logout(self, request, context):
         ok = self.auth.logout(request.token)
+        if ok:
+            self.chat.publish_directory_changed_for_all()
         return chat_pb2.LogoutResponse(
             success=ok,
             message="Logged out successfully" if ok else "Invalid token or already logged out",
@@ -142,6 +156,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def UpdatePresence(self, request, context):
         sess = self._require_auth(request.token, context)
         self.auth.update_status(sess["user_id"], request.status)
+        self.chat.publish_directory_changed_for_all()
         return chat_pb2.UpdatePresenceResponse(success=True)
 
     # ── 1-on-1 Direct Messaging RPCs ──────────────────────────────────────────
@@ -310,13 +325,66 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         logger.info("[STREAM] User %s connected to event stream", sess["username"])
 
         try:
+            # READY lets the browser know its subscription is installed before
+            # it loads snapshots; messages arriving during those reads are then
+            # reconciled by message_id on the client.
+            yield chat_pb2.MessageEvent(event_type="READY")
+            last_auth_check = time.monotonic()
+            last_heartbeat = last_auth_check
+            auth_check_interval = STREAM_AUTH_CHECK_INTERVAL_SECONDS
+            heartbeat_interval = STREAM_HEARTBEAT_INTERVAL_SECONDS
+
             while context.is_active():
+                now = time.monotonic()
+                if now - last_auth_check >= auth_check_interval:
+                    last_auth_check = now
+                    if not self.auth.token_is_valid(request.token):
+                        yield chat_pb2.MessageEvent(event_type="AUTH_EXPIRED")
+                        return
+
+                if now - last_heartbeat >= heartbeat_interval:
+                    last_heartbeat = now
+                    yield chat_pb2.MessageEvent(event_type="HEARTBEAT")
+
+                wait_for = min(
+                    1.0,  # Bound cancellation latency without issuing browser HTTP polls.
+                    auth_check_interval - (now - last_auth_check),
+                    heartbeat_interval - (now - last_heartbeat),
+                )
                 try:
-                    event_data = q.get(timeout=1.0)
-                    msg_proto = self._to_message_proto(event_data)
-                    yield chat_pb2.MessageEvent(type="NEW_MESSAGE", message=msg_proto)
+                    event = q.get(timeout=max(0.1, wait_for))
                 except queue.Empty:
                     pass
+                else:
+                    # Validate a session before delivering any queued data so a
+                    # logout revokes access promptly, even with a busy stream.
+                    if not self.auth.token_is_valid(request.token):
+                        yield chat_pb2.MessageEvent(event_type="AUTH_EXPIRED")
+                        return
+
+                    event_type = event.get("event_type", "NEW_MESSAGE")
+                    message = event.get("message")
+                    if event_type == "NEW_MESSAGE" and message:
+                        if message.get("chat_type") == "GROUP" and not self.chat.is_group_member(
+                            message.get("group_id", ""), user_id
+                        ):
+                            # Membership may have been revoked after the event
+                            # was queued. Do not disclose group content.
+                            continue
+                        yield chat_pb2.MessageEvent(
+                            event_type=event_type,
+                            message=self._to_message_proto(message),
+                        )
+                    elif event_type == "GROUP_ACCESS_REVOKED" and message:
+                        yield chat_pb2.MessageEvent(
+                            event_type=event_type,
+                            message=chat_pb2.Message(
+                                chat_type="GROUP",
+                                group_id=message.get("group_id", ""),
+                            ),
+                        )
+                    else:
+                        yield chat_pb2.MessageEvent(event_type=event_type)
         except Exception as exc:
             logger.debug("[STREAM] Stream loop ended: %s", exc)
         finally:
