@@ -1,6 +1,6 @@
 # Distributed Real-Time Chat & Collaboration
 
-A lightweight, containerized real-time chat platform powered by **gRPC microservices** and an **on-device local LLM** for intelligent summaries and smart replies.
+A lightweight,  real-time chat platform powered by **gRPC microservices** and a **local LLM** for intelligent summaries and smart replies.
 
 ---
 
