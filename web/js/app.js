@@ -605,7 +605,7 @@ function updateChatHeader() {
     if (addMemberBtn) addMemberBtn.style.display = "none";
   } else {
     title.innerText = "# " + currentChat.name;
-    sub.innerText = `Group Ã‚Â· ${currentChat.member_count || 1} members Ã‚Â· You are ${currentChat.role}`;
+    sub.innerText = `Group - ${currentChat.member_count || 1} members - You are ${currentChat.role}`;
     dot.style.display = "none";
     const isAdmin = currentChat.role === "ADMIN";
     if (manageBtn) manageBtn.style.display = isAdmin ? "inline-flex" : "none";
@@ -1181,4 +1181,3 @@ window.addEventListener("pageshow", () => {
   pageSuspended = false;
   if (currentUser && !eventController) startEventStream();
 });
-

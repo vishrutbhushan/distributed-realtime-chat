@@ -733,7 +733,7 @@ body {
   flex: 0 0 auto;
 }
 
-/* Ã¢â€â‚¬Ã¢â€â‚¬ Responsive Rules for Multi-Tab Tiling Demo Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* Responsive Rules for Multi-Tab Tiling Demo */
 @media (max-width: 720px) {
   .sidebar {
     width: 190px;
