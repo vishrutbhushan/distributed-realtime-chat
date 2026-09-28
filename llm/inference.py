@@ -7,6 +7,7 @@ mock fallback if no local model is installed.
 """
 
 import logging
+import json
 import os
 import re
 import threading
@@ -26,25 +27,49 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL_PATH = "/models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 MAX_CONTEXT_CHARS = 8000
 MAX_SMART_REPLY_WORDS = 18
+SMART_REPLY_RESPONSE_FORMAT = {"type": "json_object"}
+SMART_REPLY_GBNF = r'''
+root ::= "{" ws "\"replies\"" ws ":" ws "[" ws string ws "," ws string ws "," ws string ws "]" ws "}"
+string ::= "\"" chars "\""
+chars ::= ([^"\\] | "\\" escape)*
+escape ::= ["\\/bfnrt] | "u" hex hex hex hex
+hex ::= [0-9a-fA-F]
+ws ::= [ \t\n\r]*
+'''
 
 
 def _parse_smart_replies(raw: str) -> List[str] | None:
-    """Accept only three concise, distinct replies; never pad malformed output."""
+    """Parse constrained JSON replies, with legacy numbered-text support for mocks."""
     text = (raw or "").strip()
-    lines = text.splitlines()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        payload = None
 
-    if len(lines) != 3:
-        return None
+    if isinstance(payload, dict):
+        candidate_replies = payload.get("replies")
+        if not isinstance(candidate_replies, list) or len(candidate_replies) != 3:
+            return None
+        replies = [str(reply).strip() for reply in candidate_replies]
+        if not all(replies):
+            return None
+    else:
+        markers = list(re.finditer(r"(?:^|\n|\s)([1-3])[.)]\s+", text))
+        if len(markers) != 3:
+            return None
 
-    replies = []
-    for number, line in enumerate(lines, start=1):
-        match = re.fullmatch(rf"\s*{number}[.)]\s+(.+?)\s*", line)
-        if not match:
+        replies = []
+        for expected_number, marker in enumerate(markers, start=1):
+            if int(marker.group(1)) != expected_number:
+                return None
+            end = markers[expected_number].start() if expected_number < 3 else len(text)
+            cleaned = text[marker.end():end].strip(" \t\r\n\"'`“”‘’")
+            if not cleaned:
+                return None
+            replies.append(cleaned)
+
+    if any(len(reply.split()) > MAX_SMART_REPLY_WORDS for reply in replies):
             return None
-        cleaned = match.group(1).strip(" \t\"'`“”‘’")
-        if not cleaned or len(cleaned.split()) >= MAX_SMART_REPLY_WORDS:
-            return None
-        replies.append(cleaned)
 
     if len(replies) != 3:
         return None
@@ -192,10 +217,23 @@ class ChatInference:
         preserve_lines: bool = False,
         timeout_seconds: float | None = None,
         system_prompt: str | None = None,
+        response_format: dict | None = None,
+        grammar=None,
     ) -> str:
         if self.is_mock or self._model is None:
             mock_prompt = f"{system_prompt or ''}\n{prompt}"
-            return self._mock_complete(mock_prompt)
+            logger.info(
+                "[LLM] completion_request mode=mock system_prompt=%s user_prompt=%s",
+                json.dumps(system_prompt or "", ensure_ascii=False),
+                json.dumps(prompt, ensure_ascii=False),
+            )
+            answer = self._mock_complete(mock_prompt)
+            logger.info(
+                "[LLM] completion_response mode=mock chars=%d output=%s",
+                len(answer),
+                json.dumps(answer, ensure_ascii=False),
+            )
+            return answer
 
         timeout_seconds = timeout_seconds or self._timeout_seconds
 
@@ -209,8 +247,16 @@ class ChatInference:
             },
             {"role": "user", "content": prompt},
         ]
+        logger.info(
+            "[LLM] completion_request messages=%s response_format=%s max_tokens=%s temperature=%s",
+            json.dumps(messages, ensure_ascii=False),
+            json.dumps(response_format, ensure_ascii=False) if response_format else "none",
+            max_tokens,
+            temperature,
+        )
         slot_timeout = min(float(timeout_seconds), 25.0)
         if not self._slot.acquire(timeout=slot_timeout):
+            logger.error("[LLM] completion_rejected reason=model_busy")
             raise RuntimeError("Local LLM is busy processing another request; retry shortly")
         try:
             future = self._executor.submit(
@@ -218,6 +264,8 @@ class ChatInference:
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                response_format=response_format,
+                grammar=grammar,
             )
         except Exception:
             self._slot.release()
@@ -227,12 +275,22 @@ class ChatInference:
         try:
             response = future.result(timeout=timeout_seconds)
         except TimeoutError as exc:
+            logger.error(
+                "[LLM] completion_timeout timeout_seconds=%s messages=%s",
+                timeout_seconds,
+                json.dumps(messages, ensure_ascii=False),
+            )
             raise RuntimeError(
                 f"Local model inference exceeded timeout limit of {timeout_seconds:g} seconds"
             ) from exc
 
         answer = response["choices"][0]["message"]["content"]
         answer = (answer or "").strip()
+        logger.info(
+            "[LLM] completion_response chars=%d output=%s",
+            len(answer),
+            json.dumps(answer, ensure_ascii=False),
+        )
         if preserve_lines:
             if not answer:
                 raise RuntimeError("The local model returned an empty response")
@@ -286,6 +344,13 @@ class ChatInference:
             raise ValueError("Smart replies require a text message to reply to")
 
         started = time.monotonic()
+        smart_reply_grammar = None
+        if not self.is_mock and self._model is not None:
+            try:
+                from llama_cpp import LlamaGrammar
+                smart_reply_grammar = LlamaGrammar.from_string(SMART_REPLY_GBNF)
+            except ImportError:
+                logger.debug("[LLM] llama_cpp unavailable; using parser validation only")
         for attempt in range(2):
             remaining = self._timeout_seconds - (time.monotonic() - started)
             if remaining <= 0:
@@ -305,6 +370,12 @@ class ChatInference:
                 preserve_lines=True,
                 timeout_seconds=remaining,
                 system_prompt=system_prompt,
+                response_format=SMART_REPLY_RESPONSE_FORMAT,
+                grammar=smart_reply_grammar,
+            )
+            logger.info(
+                "[LLM] SmartReplies raw_output attempt=%d chars=%d output=%r",
+                attempt + 1, len(raw), raw[:2000],
             )
             replies = _parse_smart_replies(raw)
             if replies is not None:

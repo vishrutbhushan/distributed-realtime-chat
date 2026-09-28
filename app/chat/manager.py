@@ -102,6 +102,7 @@ class ChatManager:
         chat_type: str,
         target_id: str,
         timestamp: Optional[int] = None,
+        notify: bool | str = True,
     ):
         """Record that user_id has read messages up to timestamp in chat."""
         if not user_id or not target_id:
@@ -123,7 +124,18 @@ class ChatManager:
                 logger.error("[CHAT] mark_as_read error: %s", exc)
                 self.db.rollback()
                 return
-        self.publish_directory_changed([user_id])
+        if notify == "local":
+            self.publish_event(
+                user_id,
+                "DIRECTORY_CHANGED",
+                {"chat_type": chat_type, "target_id": target_id, "local_only": True},
+            )
+        elif notify:
+            self.publish_event(
+                user_id,
+                "READ_STATE_CHANGED",
+                {"chat_type": chat_type, "target_id": target_id},
+            )
 
     def get_dm_metadata_for_user(self, user_id: str) -> Dict[str, dict]:
         """
@@ -335,7 +347,7 @@ class ChatManager:
             }
 
         # Sender has read up to this message
-        self.mark_as_read(sender_id, "DM", recipient_id, ts)
+        self.mark_as_read(sender_id, "DM", recipient_id, ts, notify="local")
 
         # Notify both sender and recipient
         self._notify_user(recipient_id, msg)
@@ -710,7 +722,7 @@ class ChatManager:
             members = self.db.fetchall("SELECT user_id FROM group_members WHERE group_id = ?", (group_id,))
 
         # Sender has read up to this message
-        self.mark_as_read(sender_id, "GROUP", group_id, ts)
+        self.mark_as_read(sender_id, "GROUP", group_id, ts, notify="local")
 
         for m in members:
             self._notify_user(m["user_id"], msg)

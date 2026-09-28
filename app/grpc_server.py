@@ -180,6 +180,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def SendDirectMessage(self, request, context):
         sess = self._require_auth(request.token, context)
+        started = time.monotonic()
+        logger.info(
+            "[CHAT] DM send start sender=%s recipient=%s request_id=%s",
+            sess["user_id"], request.recipient_user_id, request.client_request_id or "-",
+        )
         ok, msg, err = self.chat.send_dm(
             sender_id=sess["user_id"],
             recipient_id=request.recipient_user_id,
@@ -188,10 +193,18 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             file_id=request.file_id or None,
         )
         if ok:
+            logger.info(
+                "[CHAT] DM send complete message_id=%s elapsed_ms=%.1f",
+                msg.get("message_id", "-"), (time.monotonic() - started) * 1000,
+            )
             return chat_pb2.SendMessageResponse(
                 success=True,
                 message=self._to_message_proto(msg),
             )
+        logger.warning(
+            "[CHAT] DM send rejected sender=%s recipient=%s error=%s elapsed_ms=%.1f",
+            sess["user_id"], request.recipient_user_id, err, (time.monotonic() - started) * 1000,
+        )
         return chat_pb2.SendMessageResponse(success=False, error=err)
 
     def GetDirectMessages(self, request, context):
@@ -299,6 +312,11 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
     def SendGroupMessage(self, request, context):
         sess = self._require_auth(request.token, context)
+        started = time.monotonic()
+        logger.info(
+            "[CHAT] group send start sender=%s group=%s request_id=%s",
+            sess["user_id"], request.group_id, request.client_request_id or "-",
+        )
         ok, msg, err = self.chat.send_group_message(
             sender_id=sess["user_id"],
             group_id=request.group_id,
@@ -307,10 +325,18 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             file_id=request.file_id or None,
         )
         if ok:
+            logger.info(
+                "[CHAT] group send complete message_id=%s elapsed_ms=%.1f",
+                msg.get("message_id", "-"), (time.monotonic() - started) * 1000,
+            )
             return chat_pb2.SendMessageResponse(
                 success=True,
                 message=self._to_message_proto(msg),
             )
+        logger.warning(
+            "[CHAT] group send rejected sender=%s group=%s error=%s elapsed_ms=%.1f",
+            sess["user_id"], request.group_id, err, (time.monotonic() - started) * 1000,
+        )
         return chat_pb2.SendMessageResponse(success=False, error=err)
 
     def GetGroupMessages(self, request, context):
@@ -404,6 +430,25 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                             message=chat_pb2.Message(
                                 chat_type="GROUP",
                                 group_id=message.get("group_id", ""),
+                            ),
+                        )
+                    elif event_type == "READ_STATE_CHANGED" and message:
+                        target_field = "group_id" if message.get("chat_type") == "GROUP" else "recipient_id"
+                        yield chat_pb2.MessageEvent(
+                            event_type=event_type,
+                            message=chat_pb2.Message(
+                                chat_type=message.get("chat_type", ""),
+                                **{target_field: message.get("target_id", "")},
+                            ),
+                        )
+                    elif event_type == "DIRECTORY_CHANGED" and message:
+                        yield chat_pb2.MessageEvent(
+                            event_type=event_type,
+                            message=chat_pb2.Message(
+                                chat_type=message.get("chat_type", ""),
+                                group_id=message.get("target_id", "") if message.get("chat_type") == "GROUP" else "",
+                                recipient_id=message.get("target_id", "") if message.get("chat_type") != "GROUP" else "",
+                                content="local_only" if message.get("local_only") else "",
                             ),
                         )
                     else:
@@ -500,6 +545,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def GetSmartReplies(self, request, context):
         sess = self._require_auth(request.token, context)
         rid = request.request_id or str(uuid.uuid4())
+        started = time.monotonic()
+        logger.info("[LLM] smart-reply start request_id=%s user=%s", rid, sess["user_id"])
 
         if not self.llm:
             return chat_pb2.SmartReplyResponse(
@@ -514,7 +561,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     context_title=request.context_title or "Chat",
                 ),
                 metadata=(("x-chat-current-user", sess.get("username", "you")),),
+                timeout=60,
             )
+            logger.info("[LLM] smart-reply complete request_id=%s success=%s elapsed_ms=%.1f", rid, resp.success, (time.monotonic() - started) * 1000)
             return chat_pb2.SmartReplyResponse(
                 request_id=resp.request_id,
                 suggestions=list(resp.suggestions),
@@ -522,7 +571,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 error=resp.error,
             )
         except Exception as exc:
-            logger.error("[LLM PROXY] GetSmartReplies error: %s", exc)
+            logger.error("[LLM] smart-reply failed request_id=%s elapsed_ms=%.1f error=%s", rid, (time.monotonic() - started) * 1000, exc)
             return chat_pb2.SmartReplyResponse(
                 request_id=rid, success=False, error=str(exc)
             )
@@ -530,6 +579,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def SummarizeChat(self, request, context):
         sess = self._require_auth(request.token, context)
         rid = request.request_id or str(uuid.uuid4())
+        started = time.monotonic()
+        logger.info("[LLM] summary start request_id=%s user=%s", rid, sess["user_id"])
 
         if not self.llm:
             return chat_pb2.SummarizeChatResponse(
@@ -572,7 +623,12 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     chat_history=history,
                     context_title=request.context_title or "Chat",
                     current_user=current_user,
-                )
+                ),
+                timeout=60,
+            )
+            logger.info(
+                "[LLM] summary complete request_id=%s success=%s elapsed_ms=%.1f",
+                rid, resp.success, (time.monotonic() - started) * 1000,
             )
             return chat_pb2.SummarizeChatResponse(
                 request_id=resp.request_id,
@@ -581,7 +637,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 error=resp.error,
             )
         except Exception as exc:
-            logger.error("[LLM PROXY] SummarizeChat error: %s", exc)
+            logger.error("[LLM] summary failed request_id=%s elapsed_ms=%.1f error=%s", rid, (time.monotonic() - started) * 1000, exc)
             return chat_pb2.SummarizeChatResponse(
                 request_id=rid, success=False, error=str(exc)
             )
@@ -589,6 +645,8 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     def GetContextSuggestion(self, request, context):
         sess = self._require_auth(request.token, context)
         rid = request.request_id or str(uuid.uuid4())
+        started = time.monotonic()
+        logger.info("[LLM] suggestion start request_id=%s user=%s", rid, sess["user_id"])
 
         if not self.llm:
             return chat_pb2.ContextSuggestionResponse(
@@ -601,8 +659,10 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     chat_history=list(request.chat_history),
                     context_title=request.context_title or "Chat",
                     current_user=sess.get("username", "user"),
-                )
+                ),
+                timeout=60,
             )
+            logger.info("[LLM] suggestion complete request_id=%s success=%s elapsed_ms=%.1f", rid, resp.success, (time.monotonic() - started) * 1000)
             return chat_pb2.ContextSuggestionResponse(
                 request_id=resp.request_id,
                 suggestion=resp.suggestion,
@@ -610,7 +670,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 error=resp.error,
             )
         except Exception as exc:
-            logger.error("[LLM PROXY] GetContextSuggestion error: %s", exc)
+            logger.error("[LLM] suggestion failed request_id=%s elapsed_ms=%.1f error=%s", rid, (time.monotonic() - started) * 1000, exc)
             return chat_pb2.ContextSuggestionResponse(
                 request_id=rid, success=False, error=str(exc)
             )

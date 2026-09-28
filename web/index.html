@@ -72,8 +72,8 @@
           </div>
         </div>
         <div class="header-actions" id="chat-actions" style="display: none;">
-          <button class="btn-action ai" onclick="requestSummarize()" title="Conversation summary">📝 <span class="btn-text">Summary</span></button>
-          <button class="btn-action" id="btn-manage-group" style="display: none;" onclick="openManageGroupModal()" title="Manage group members and settings">⚙️ <span class="btn-text">Manage</span></button>
+          <button class="btn-action" id="btn-summary" onclick="requestSummarize()">Summary</button>
+          <button class="btn-action" id="btn-manage-group" style="display: none;" onclick="openManageGroupModal()">Manage</button>
         </div>
       </div>
 
@@ -93,8 +93,9 @@
         </div>
         <div class="input-row">
           <input type="file" id="file-input" style="display: none;" accept="image/*,application/pdf" onchange="onFileSelected(this)">
-          <button class="btn-attach" onclick="document.getElementById('file-input').click()" title="Attach PDF or Image">📎</button>
+          <button class="btn-attach" onclick="document.getElementById('file-input').click()" title="Attach PDF or Image" aria-label="Attach PDF or image">&#x1F4CE;</button>
           <input type="text" class="chat-input" id="message-input" placeholder="Type a message..." onkeydown="if(event.key==='Enter') sendMessage()">
+          <button class="btn-smart-reply" onclick="triggerSmartReplies()" title="Generate smart replies">Smart reply</button>
           <button class="btn-send" onclick="sendMessage()">Send</button>
         </div>
       </div>
@@ -105,7 +106,7 @@
   <div class="modal-overlay" id="create-group-modal">
     <div class="modal-card">
       <div class="modal-header">
-        <span>➕ Create New Group</span>
+        <span>Create New Group</span>
         <button class="modal-close" onclick="closeModal('create-group-modal')">✕</button>
       </div>
       <div class="form-group" style="margin-bottom: 8px;">
@@ -124,7 +125,7 @@
   <div class="modal-overlay" id="manage-group-modal">
     <div class="modal-card">
       <div class="modal-header">
-        <span>⚙️ Manage Group</span>
+        <span>Manage Group</span>
         <button class="modal-close" onclick="closeModal('manage-group-modal')">✕</button>
       </div>
       <div class="form-group" style="margin-bottom: 8px;">
@@ -153,10 +154,12 @@
   <div class="modal-overlay" id="summary-modal">
     <div class="modal-card">
       <div class="modal-header">
-        <span>📝 Conversation Summary (LLM)</span>
+        <span>Conversation Summary</span>
         <button class="modal-close" onclick="closeModal('summary-modal')">✕</button>
       </div>
-      <div class="summary-content" id="summary-text">Generating summary...</div>
+      <div class="summary-content" id="summary-text">
+        <div class="modal-loading"><span class="loading-spinner"></span><span>Generating summary...</span></div>
+      </div>
       <button class="btn" style="padding: 8px; font-size: 13px;" onclick="closeModal('summary-modal')">Close</button>
     </div>
   </div>
@@ -165,7 +168,7 @@
   <div class="modal-overlay" id="suggestion-modal">
     <div class="modal-card">
       <div class="modal-header">
-        <span>🎯 Context-Aware Suggestions (LLM)</span>
+        <span>Context Suggestions</span>
         <button class="modal-close" onclick="closeModal('suggestion-modal')">✕</button>
       </div>
       <div class="summary-content" id="suggestion-text">Generating suggestion...</div>

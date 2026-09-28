@@ -260,21 +260,73 @@ function beginSnapshotReconciliation(generation) {
 
 function applyRealtimeEvent(type, data) {
   if (type === "DIRECTORY_CHANGED") {
+    if (data?.local_only) {
+      updateDirectoryReadState(data);
+      return;
+    }
     requestDirectoryRefresh();
+    return;
+  }
+  if (type === "READ_STATE_CHANGED") {
+    updateDirectoryReadState(data);
     return;
   }
   if (type !== "NEW_MESSAGE" || !data?.message) return;
 
   const message = data.message;
-  requestDirectoryRefresh();
+  updateDirectoryFromMessage(message);
   const key = conversationKeyForMessage(message);
   if (key !== conversationKey()) return;
 
   mergeIntoCurrentMessages([message]);
   renderMessages(currentMessages);
-  maybeRequestSmartReplies(message);
   if (message.sender_id !== currentUser.user_id && currentChat) {
     api.markRead(currentUser.token, currentChat.type, currentChat.id).catch(() => {});
+  }
+}
+
+function updateDirectoryFromMessage(message) {
+  const isCurrentUserSender = message.sender_id === currentUser?.user_id;
+  const isCurrentConversation = conversationKeyForMessage(message) === conversationKey();
+  const preview = message.content || (message.file_id ? "[File Attachment]" : "");
+
+  if (message.chat_type === "GROUP") {
+    const group = cachedGroups.find(item => item.group_id === message.group_id);
+    if (!group) return;
+    group.last_message_time = message.timestamp;
+    group.last_message = preview;
+    group.unread_count = isCurrentUserSender || isCurrentConversation
+      ? 0
+      : (group.unread_count || 0) + 1;
+    renderGroupsList(cachedGroups);
+    return;
+  }
+
+  const otherUserId = isCurrentUserSender ? message.recipient_id : message.sender_id;
+  const user = cachedUsers.find(item => item.user_id === otherUserId);
+  if (!user) return;
+  user.last_message_time = message.timestamp;
+  user.last_message = preview;
+  user.unread_count = isCurrentUserSender || isCurrentConversation
+    ? 0
+    : (user.unread_count || 0) + 1;
+  renderUsersList(cachedUsers);
+}
+
+function updateDirectoryReadState(data) {
+  if (!data?.target_id) return;
+  if (data.chat_type === "GROUP") {
+    const group = cachedGroups.find(item => item.group_id === data.target_id);
+    if (group) {
+      group.unread_count = 0;
+      renderGroupsList(cachedGroups);
+    }
+    return;
+  }
+  const user = cachedUsers.find(item => item.user_id === data.target_id);
+  if (user) {
+    user.unread_count = 0;
+    renderUsersList(cachedUsers);
   }
 }
 
@@ -305,18 +357,6 @@ function clearSmartReplySuggestions() {
   if (!bar) return;
   bar.innerHTML = "";
   bar.style.display = "none";
-}
-
-function maybeRequestSmartReplies(message) {
-  if (!message || !currentUser) return;
-  if (message.sender_id !== currentUser.user_id && message.message_id !== lastSmartReplyMsgId) {
-    lastSmartReplyMsgId = message.message_id;
-    clearSmartReplySuggestions();
-    if (hasSmartReplyText(message)) requestSmartReplies(message.message_id);
-  } else if (message.sender_id === currentUser.user_id) {
-    lastSmartReplyMsgId = null;
-    clearSmartReplySuggestions();
-  }
 }
 
 function clearSelectedConversation(message) {
@@ -622,12 +662,8 @@ async function loadMessages(options = {}) {
         }
       }
 
-      if (currentMessages.length > 0) {
-        maybeRequestSmartReplies(currentMessages[currentMessages.length - 1]);
-      } else {
-        lastSmartReplyMsgId = null;
-        clearSmartReplySuggestions();
-      }
+      lastSmartReplyMsgId = null;
+      clearSmartReplySuggestions();
     }
   } catch (e) {
     if (e.name !== "AbortError") console.error("Messages load error", e);
@@ -659,7 +695,7 @@ function renderMessages(messages) {
                     </a>`;
       } else {
         fileHtml = `<a class="msg-file-card" href="/api/files/download?file_id=${encodeURIComponent(m.file_id)}&token=${encodeURIComponent(currentUser.token)}" target="_blank">
-                      <span>📄</span>
+                      <span>File</span>
                       <span>${escapeHtml(m.filename)} (${formatBytes(m.file_size)})</span>
                       <span style="color: var(--primary); margin-left: auto;">Download</span>
                     </a>`;
@@ -761,7 +797,6 @@ async function sendMessage() {
         }
       }
 
-      requestDirectoryRefresh();
     } else {
       alert(data.error || "Failed to send message");
     }
@@ -771,36 +806,63 @@ async function sendMessage() {
 }
 
 // AI LLM Features
+function triggerSmartReplies() {
+  if (!currentChat || !currentUser || currentMessages.length === 0) return;
+  const incomingMessage = [...currentMessages].reverse().find(
+    message => message.sender_id !== currentUser.user_id && hasSmartReplyText(message)
+  );
+  if (!incomingMessage) {
+    clearSmartReplySuggestions();
+    const bar = document.getElementById("smart-replies-bar");
+    if (bar) {
+      bar.innerText = "Smart replies are available after a message from the other person.";
+      bar.style.display = "block";
+    }
+    return;
+  }
+  lastSmartReplyMsgId = incomingMessage.message_id;
+  clearSmartReplySuggestions();
+  requestSmartReplies(incomingMessage.message_id);
+}
+
 async function requestSmartReplies(messageId) {
   if (!currentChat || !currentUser) return;
   const chat = { ...currentChat };
   const token = currentUser.token;
   const chatKey = conversationKey(chat);
   const messages = [...currentMessages];
-  const latestMessage = messages[messages.length - 1];
-  if (!latestMessage || latestMessage.message_id !== messageId || !String(latestMessage.content || "").trim()) return;
+  const messageIndex = messages.findIndex(message => message.message_id === messageId);
+  const latestMessage = messageIndex >= 0 ? messages[messageIndex] : null;
+  if (!latestMessage || !String(latestMessage.content || "").trim()) return;
 
   const requestIdentity = { token, chatKey, messageId };
-  const historyStrings = messages
-    .filter(m => String(m.content || "").trim())
-    .map(m => `${m.sender_username || "User"}: ${m.content}`);
   const isStillCurrent = () => isSmartReplyRequestCurrent(requestIdentity, {
     token: currentUser?.token,
     chatKey: conversationKey(),
-    messageId: currentMessages[currentMessages.length - 1]?.message_id,
+    messageId: currentMessages.some(message => message.message_id === messageId) ? messageId : null,
   }) && lastSmartReplyMsgId === messageId;
+
+  const button = document.querySelector(".btn-smart-reply");
+  if (button) {
+    button.disabled = true;
+    button.dataset.originalText = button.innerText;
+    button.innerText = "Generating...";
+    button.classList.add("loading");
+  }
 
   try {
     const data = await api.smartReplies(
       token,
       chat.type,
       chat.id,
-      historyStrings,
+      messages.slice(0, messageIndex + 1)
+        .filter(m => String(m.content || "").trim())
+        .map(m => `${m.sender_username || "User"}: ${m.content}`),
       latestMessage.content,
       chat.name
     );
     if (!isStillCurrent()) return;
-    if (data.success && Array.isArray(data.suggestions) && data.suggestions.length === 3) {
+    if (data.success && Array.isArray(data.suggestions) && data.suggestions.length > 0) {
       const bar = document.getElementById("smart-replies-bar");
       if (!bar) return;
       bar.innerHTML = "";
@@ -817,19 +879,44 @@ async function requestSmartReplies(messageId) {
       bar.style.display = "flex";
     } else {
       clearSmartReplySuggestions();
+      const bar = document.getElementById("smart-replies-bar");
+      if (bar) {
+        bar.innerText = data.error || "No smart replies available.";
+        bar.style.display = "block";
+      }
+      console.error("Smart replies returned no suggestions", data.error || data);
     }
   } catch (e) {
     if (isStillCurrent()) {
       clearSmartReplySuggestions();
       console.error("Smart replies error", e);
+      const bar = document.getElementById("smart-replies-bar");
+      if (bar) {
+        bar.innerText = "Smart replies unavailable. Try again.";
+        bar.style.display = "block";
+      }
+    }
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.innerText = button.dataset.originalText || "Smart reply";
+      button.classList.remove("loading");
     }
   }
 }
 
 async function requestSummarize() {
   if (!currentChat || !currentUser) return;
+  const button = document.getElementById("btn-summary");
+  if (button) {
+    button.disabled = true;
+    button.dataset.originalText = button.innerText;
+    button.innerText = "Generating...";
+    button.classList.add("loading");
+  }
   openModal("summary-modal");
-  document.getElementById("summary-text").innerText = "Generating summary over entire conversation history...";
+  document.getElementById("summary-text").innerHTML =
+    '<div class="modal-loading"><span class="loading-spinner"></span><span>Generating summary...</span></div>';
 
   let historyStrings = currentMessages.map(m => `${m.sender_username || "User"}: ${m.content || ""}`).filter(s => s.trim().length > 0);
   if (historyStrings.length === 0) {
@@ -855,6 +942,12 @@ async function requestSummarize() {
     }
   } catch (e) {
     document.getElementById("summary-text").innerText = "Error requesting summary: " + e.message;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.innerText = button.dataset.originalText || "Summary";
+      button.classList.remove("loading");
+    }
   }
 }
 
@@ -890,7 +983,10 @@ function openCreateGroupModal() {
       div.className = "user-select-item";
       div.innerHTML = `
         <input type="checkbox" id="chk-${u.user_id}" value="${u.user_id}">
-        <label for="chk-${u.user_id}">${escapeHtml(u.username)} (${u.status})</label>
+        <label for="chk-${u.user_id}">
+          <span class="select-user-name">${escapeHtml(u.username)}</span>
+          <span class="select-user-status">${escapeHtml(u.status)}</span>
+        </label>
       `;
       container.appendChild(div);
     });
@@ -910,7 +1006,7 @@ async function submitCreateGroup() {
     if (data.success) {
       closeModal("create-group-modal");
       document.getElementById("new-group-name").value = "";
-      loadDirectory();
+      await loadDirectory();
       selectGroup(data.group);
     } else {
       alert(data.message || "Failed to create group");
@@ -983,8 +1079,8 @@ async function groupAction(action, targetUserId, newName = null) {
     const data = await api.updateGroup(currentUser.token, currentChat.id, action, targetUserId, newName);
     if (data.success) {
       if (newName) currentChat.name = newName;
-      openManageGroupModal();
-      loadDirectory();
+      await loadDirectory();
+      await openManageGroupModal();
       updateChatHeader();
     } else {
       alert(data.message || "Action failed");

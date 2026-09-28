@@ -68,6 +68,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
 
     grpc_stub: chat_pb2_grpc.ChatServiceStub = None
     stream_stub: chat_pb2_grpc.ChatServiceStub = None
+    llm_stub: chat_pb2_grpc.ChatServiceStub = None
 
     def setup(self):
         super().setup()
@@ -360,6 +361,13 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             payload["message"] = self._msg_to_dict(event.message)
         elif event_type == "GROUP_ACCESS_REVOKED" and event.HasField("message"):
             payload["group_id"] = event.message.group_id
+        elif event_type == "READ_STATE_CHANGED" and event.HasField("message"):
+            payload["chat_type"] = event.message.chat_type
+            payload["target_id"] = event.message.group_id or event.message.recipient_id
+        elif event_type == "DIRECTORY_CHANGED" and event.HasField("message"):
+            payload["chat_type"] = event.message.chat_type
+            payload["target_id"] = event.message.group_id or event.message.recipient_id
+            payload["local_only"] = event.message.content == "local_only"
         encoded = json.dumps(payload, separators=(",", ":"))
         frame = f"event: {event_type}\ndata: {encoded}\n\n".encode("utf-8")
         self.wfile.write(frame)
@@ -609,7 +617,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
         if path == "/api/llm/smart-reply":
             data = self._read_json()
             try:
-                resp = self.grpc_stub.GetSmartReplies(
+                resp = self.llm_stub.GetSmartReplies(
                     chat_pb2.SmartReplyRequest(
                         token=data.get("token", ""),
                         chat_history=data.get("chat_history", []),
@@ -630,7 +638,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
         if path == "/api/llm/summarize":
             data = self._read_json()
             try:
-                resp = self.grpc_stub.SummarizeChat(
+                resp = self.llm_stub.SummarizeChat(
                     chat_pb2.SummarizeChatRequest(
                         token=data.get("token", ""),
                         chat_type=data.get("chat_type", ""),
@@ -653,7 +661,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
         if path == "/api/llm/suggest":
             data = self._read_json()
             try:
-                resp = self.grpc_stub.GetContextSuggestion(
+                resp = self.llm_stub.GetContextSuggestion(
                     chat_pb2.ContextSuggestionRequest(
                         token=data.get("token", ""),
                         chat_history=data.get("chat_history", []),
@@ -696,6 +704,7 @@ def run_web_gateway(
     port: int,
     grpc_target: str,
     stream_grpc_target: str = None,
+    llm_grpc_target: str = None,
 ) -> ThreadingHTTPServer:
     """Run the threaded HTTP Web Gateway server."""
     interceptor = _BrowserPresenceInterceptor()
@@ -703,10 +712,14 @@ def run_web_gateway(
     stream_channel = grpc.intercept_channel(
         grpc.insecure_channel(stream_grpc_target or grpc_target), interceptor
     )
+    llm_channel = grpc.intercept_channel(
+        grpc.insecure_channel(llm_grpc_target or grpc_target), interceptor
+    )
     WebGatewayHandler.grpc_stub = chat_pb2_grpc.ChatServiceStub(channel)
     WebGatewayHandler.stream_stub = chat_pb2_grpc.ChatServiceStub(stream_channel)
+    WebGatewayHandler.llm_stub = chat_pb2_grpc.ChatServiceStub(llm_channel)
     httpd = ThreadingHTTPServer(("0.0.0.0", port), WebGatewayHandler)
-    httpd.grpc_channels = (channel, stream_channel)
+    httpd.grpc_channels = (channel, stream_channel, llm_channel)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="web-gateway")
     thread.start()
     logger.info("[WEB] Web Gateway running on http://0.0.0.0:%d", port)

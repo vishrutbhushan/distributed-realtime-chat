@@ -11,33 +11,34 @@ Earlier messages (latest excluded):
 
 Example:
 Incoming message: hi hows things
-Possible replies:
-1) Good, thanks! How about you?
-2) Doing okay—how are you?
-3) Pretty good! How’s your day going?
+Possible replies JSON:
+{{"replies":["Good, thanks! How about you?","Doing okay—how are you?","Pretty good! How’s your day going?"]}}
 
 For the actual incoming message, write three distinct, standalone options. Each must answer or directly respond to it before optionally asking something back. Do not start a new topic or use a generic check-in as a substitute for a reply.
 Use relevant chat details without inventing facts, deadlines, or promises. Do not take over work assigned to someone else; ask if ownership is unclear.
-Keep every reply under 18 words. Return exactly three numbered lines beginning 1), 2), and 3), with no heading or explanation."""
+Keep every reply to 18 words or fewer. Return only a JSON object with a `replies` array containing exactly three strings. No markdown or explanation."""
 
 
 SUMMARIZE_PROMPT = """\
-You are an assistant that writes clear, informative summaries of team chat conversations.
+Turn the team conversation below into a concise summary for {current_user}.
 
-Chat: {context_title}
-
-Recent messages:
+Conversation title: {context_title}
+Messages:
 {messages}
 
-Instructions:
-Write an informative summary paragraph of the recent conversation from the perspective of {current_user}:
-- Address {current_user} as "You", and refer to other participants by their names.
-- Clearly describe what was asked, discussed, confirmed, or completed between you and the other participants.
-- Provide a well-rounded summary that gives useful context without being overly verbose or too brief.
-- Rely strictly on the messages provided above. Do NOT make things up, extrapolate, or invent details not stated in the chat.
-- Write in continuous prose. Do NOT write dialogue lines or transcripts (never output "Sender: message").
+Rules:
+- Output only one paragraph of 2 to 4 sentences.
+- Describe the topics, questions, decisions, and next steps.
+- Refer to {current_user} as "You" and other people by name.
+- Combine the messages into a narrative; do not repeat them line by line.
+- Never output a transcript, speaker labels, bullets, quotation marks, or a heading.
+- Use only information present in the messages. Do not infer plans or facts.
 
-Summary:"""
+Example:
+Messages: You: Dinner today? Alex: Yes. You: Where? Alex: Olive's.
+Output: You and Alex agreed to have dinner today and discussed Olive's as the location.
+
+Write the summary paragraph now:"""
 
 
 CONTEXT_SUGGESTION_PROMPT = """\
@@ -83,8 +84,8 @@ def format_smart_reply(
     )
     if retry:
         system_prompt += (
-            "\n\nThe previous response missed the required format. "
-            "Follow the three numbered lines and word limit exactly."
+            "\n\nThe previous response failed validation. "
+            "Return exactly three distinct strings in the JSON replies array."
         )
     return system_prompt, latest_content
 

@@ -76,7 +76,7 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(user_message, "Can you check the logs?")
         self.assertEqual(user_message.count("Can you check the logs?"), 1)
         self.assertIn("casual team chat", system_prompt)
-        self.assertIn("under 18 words", system_prompt)
+        self.assertIn("18 words or fewer", system_prompt)
 
     def test_smart_reply_prompt_deduplicates_latest_history_message(self):
         system_prompt, user_message = format_smart_reply(
@@ -103,9 +103,9 @@ class InferenceTests(unittest.TestCase):
         )
         self.assertEqual(user_message, "hi hows things")
         self.assertEqual(user_message.count("hi hows things"), 1)
-        self.assertIn("1) Good, thanks! How about you?", system_prompt)
-        self.assertIn("2) Doing okay—how are you?", system_prompt)
-        self.assertIn("3) Pretty good! How’s your day going?", system_prompt)
+        self.assertIn('"replies":["Good, thanks! How about you?"', system_prompt)
+        self.assertIn('"Doing okay—how are you?"', system_prompt)
+        self.assertIn('"Pretty good! How’s your day going?"', system_prompt)
 
     def test_llm_service_uses_signed_in_user_metadata_for_reply_voice(self):
         model = FakeModel("1) Sure, I can check.\n2) Which error should I check?\n3) Send me the failing test.")
@@ -124,6 +124,14 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(messages[1]["role"], "user")
         self.assertEqual(messages[1]["content"], "Can you check the logs?")
 
+    def test_smart_replies_accepts_structured_json_output(self):
+        model = FakeModel('{"replies":["I can check that.","What should I focus on?","Send me the details."]}')
+        replies = ChatInference(model).smart_replies(
+            ["Sam: Please review this."], "Can you take a look?"
+        )
+        self.assertEqual(replies, ["I can check that.", "What should I focus on?", "Send me the details."])
+        self.assertEqual(model.prompts[0]["response_format"], {"type": "json_object"})
+
     def test_smart_reply_retries_once_after_invalid_format(self):
         model = SequenceModel([
             "1) Sure!\n2) Sure.\n3) This is a duplicate.",
@@ -134,7 +142,7 @@ class InferenceTests(unittest.TestCase):
             "Can you check the logs?",
         )
         self.assertEqual(len(model.prompts), 2)
-        self.assertIn("previous response missed the required format", model.prompts[1]["messages"][0]["content"])
+        self.assertIn("previous response failed validation", model.prompts[1]["messages"][0]["content"])
         self.assertEqual(model.prompts[1]["messages"][1]["content"], "Can you check the logs?")
         self.assertEqual(replies[0], "I can check the logs now.")
 
@@ -151,7 +159,14 @@ class InferenceTests(unittest.TestCase):
         self.assertIsNone(_parse_smart_replies("1) Sure.\n2) Sure!\n3) Thanks."))
         self.assertIsNone(_parse_smart_replies("Sure.\n2) Which error?\n3) Send the logs."))
         self.assertIsNone(_parse_smart_replies("1) Sure.\n3) Which error?\n2) Send the logs."))
-        self.assertIsNone(_parse_smart_replies("Replies:\n1) Sure.\n2) Which error?\n3) Send the logs."))
+        self.assertEqual(
+            _parse_smart_replies("Replies:\n1) Sure.\n2) Which error?\n3) Send the logs."),
+            ["Sure.", "Which error?", "Send the logs."],
+        )
+        self.assertEqual(
+            _parse_smart_replies("\n1. Sure.\n\n2. Which error?\n3. Send the logs."),
+            ["Sure.", "Which error?", "Send the logs."],
+        )
         self.assertIsNone(
             _parse_smart_replies(
                 "1) I can review the complete final draft after I finish the deployment work later this afternoon after the build.\n"
@@ -184,8 +199,8 @@ class InferenceTests(unittest.TestCase):
         prompt = model.prompts[0]["messages"][1]["content"]
         self.assertIn('- You: "on it"', prompt)
         self.assertIn('- Admin: "please review deployment logs"', prompt)
-        self.assertIn('Address Ajay as "You"', prompt)
-        self.assertIn("Summary:", prompt)
+        self.assertIn('Refer to Ajay as "You"', prompt)
+        self.assertIn("Write the summary paragraph now:", prompt)
 
         # Verify header stripping
         model2 = FakeModel("Summary for Ajay: You spoke with Admin.")

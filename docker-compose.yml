@@ -21,6 +21,9 @@ services:
       MODEL_THREADS: "4"
       MODEL_TIMEOUT_SECONDS: "60"
       MODEL_N_GPU_LAYERS: "-1"  # Auto-detects NVIDIA CUDA or Apple Silicon Metal; set 0 for CPU
+      LOG_FILE:           "/logs/app.log"
+    volumes:
+      - ./logs:/logs
     networks:
       - chat-net
     restart: unless-stopped
@@ -51,8 +54,10 @@ services:
       DB_PATH:           "/data/chat.db"
       FILE_STORAGE_PATH: "/data/files/"
       LLM_SERVER:        "llm-server:50060"
+      LOG_FILE:           "/logs/app.log"
     volumes:
       - node1-data:/data
+      - ./logs:/logs
     networks:
       - chat-net
     restart: unless-stopped

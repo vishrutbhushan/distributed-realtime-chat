@@ -37,16 +37,19 @@ from storage.database import Database
 NODE_ID           = os.environ.get("NODE_ID",           "node-1")
 PORT              = int(os.environ.get("PORT",          "50051"))
 STREAM_PORT       = int(os.environ.get("STREAM_PORT",   "50052"))
+LLM_RPC_PORT      = int(os.environ.get("LLM_RPC_PORT",  "50053"))
 WEB_PORT          = int(os.environ.get("WEB_PORT",      "8000"))
 DB_PATH           = os.environ.get("DB_PATH",           "/data/chat.db")
 FILE_STORAGE_PATH = os.environ.get("FILE_STORAGE_PATH", "/data/files/")
 LLM_SERVER        = os.environ.get("LLM_SERVER",        "llm-server:50060")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+_LOG_FILE = os.environ.get("LOG_FILE")
 logging.basicConfig(
     level=logging.INFO,
     format=f"[%(asctime)s] NODE={NODE_ID} %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[logging.FileHandler(_LOG_FILE, encoding="utf-8")] if _LOG_FILE else None,
 )
 logger = logging.getLogger(__name__)
 
@@ -97,11 +100,29 @@ def serve():
     stream_server.start()
     logger.info("[SERVER] Internal event-stream gRPC listening on %s (max=32)", stream_addr)
 
+    # Keep model-backed RPCs off the public worker pool. The handler waits for
+    # the model response, so a separate listener is required to avoid starving
+    # normal message RPCs while smart replies or summaries are generating.
+    llm_rpc_server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=4),
+        options=[
+            ("grpc.max_send_message_length", 64 * 1024 * 1024),
+            ("grpc.max_receive_message_length", 64 * 1024 * 1024),
+        ],
+        maximum_concurrent_rpcs=4,
+    )
+    chat_pb2_grpc.add_ChatServiceServicer_to_server(servicer, llm_rpc_server)
+    llm_rpc_addr = f"127.0.0.1:{LLM_RPC_PORT}"
+    llm_rpc_server.add_insecure_port(llm_rpc_addr)
+    llm_rpc_server.start()
+    logger.info("[SERVER] Internal LLM RPC listening on %s (max=4)", llm_rpc_addr)
+
     # 2. Start Web Gateway in background thread
     httpd = run_web_gateway(
         port=WEB_PORT,
         grpc_target=f"localhost:{PORT}",
         stream_grpc_target=f"127.0.0.1:{STREAM_PORT}",
+        llm_grpc_target=f"127.0.0.1:{LLM_RPC_PORT}",
     )
 
     try:
@@ -114,6 +135,7 @@ def serve():
         for channel in getattr(httpd, "grpc_channels", ()):
             channel.close()
         stream_server.stop(grace=3)
+        llm_rpc_server.stop(grace=3)
         grpc_server.stop(grace=3)
         servicer.presence.stop()
         db.close()

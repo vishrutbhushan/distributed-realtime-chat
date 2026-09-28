@@ -24,10 +24,12 @@ import llm_pb2
 import llm_pb2_grpc
 from llm.inference import ChatInference
 
+_LOG_FILE = os.environ.get("LOG_FILE")
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] LLM %(levelname)s %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[logging.FileHandler(_LOG_FILE, encoding="utf-8")] if _LOG_FILE else None,
 )
 logger = logging.getLogger(__name__)
 
