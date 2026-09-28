@@ -7,8 +7,6 @@
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
-
-  <!-- Auth Screen (Signup / Login) -->
   <div id="auth-container">
     <div class="auth-card">
       <div class="auth-tabs">
@@ -24,7 +22,7 @@
 
       <div class="form-group">
         <label>Password</label>
-        <input type="password" id="auth-password" placeholder="••••••••">
+        <input type="password" id="auth-password" placeholder="ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢">
         <div class="form-help">Minimum 4 characters</div>
       </div>
 
@@ -32,10 +30,7 @@
       <div class="auth-error" id="auth-error"></div>
     </div>
   </div>
-
-  <!-- Main Chat Application -->
   <div id="app">
-    <!-- Sidebar -->
     <div class="sidebar">
       <div class="sidebar-header">
         <div class="user-pill">
@@ -46,13 +41,10 @@
       </div>
 
       <div class="sidebar-sections">
-        <!-- Direct Messages Section -->
         <div class="section-title">
           <span>Users</span>
         </div>
         <ul class="item-list" id="users-list"></ul>
-
-        <!-- Group Chats Section -->
         <div class="section-title" style="margin-top: 24px;">
           <span>Groups</span>
           <button class="btn-create-group" onclick="openCreateGroupModal()">+ New Group</button>
@@ -60,8 +52,6 @@
         <ul class="item-list" id="groups-list"></ul>
       </div>
     </div>
-
-    <!-- Chat Area -->
     <div class="chat-container">
       <div class="chat-header">
         <div class="chat-title-group">
@@ -76,20 +66,14 @@
           <button class="btn-action" id="btn-manage-group" style="display: none;" onclick="openManageGroupModal()">Manage</button>
         </div>
       </div>
-
-      <!-- Messages View -->
       <div class="messages-scroll" id="messages-container">
         <div class="empty-chat">No conversation selected.<br>Pick a user or group from the left to start collaborating.</div>
       </div>
-
-      <!-- Smart Replies Bar -->
       <div class="smart-replies-bar" id="smart-replies-bar" style="display: none;"></div>
-
-      <!-- Input Area -->
       <div class="chat-input-area" id="input-area" style="display: none;">
         <div class="file-preview-bar" id="file-preview-bar">
           <span id="preview-filename">file.pdf</span>
-          <button class="btn-remove-file" onclick="clearFileAttachment()">✕</button>
+          <button class="btn-remove-file" onclick="clearFileAttachment()">ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¢</button>
         </div>
         <div class="input-row">
           <input type="file" id="file-input" style="display: none;" accept="image/*,application/pdf" onchange="onFileSelected(this)">
@@ -101,13 +85,11 @@
       </div>
     </div>
   </div>
-
-  <!-- Create Group Modal -->
   <div class="modal-overlay" id="create-group-modal">
     <div class="modal-card">
       <div class="modal-header">
         <span>Create New Group</span>
-        <button class="modal-close" onclick="closeModal('create-group-modal')">✕</button>
+        <button class="modal-close" onclick="closeModal('create-group-modal')">ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¢</button>
       </div>
       <div class="form-group" style="margin-bottom: 8px;">
         <label>Group Name</label>
@@ -120,13 +102,11 @@
       <button class="btn" style="padding: 9px; font-size: 13px;" onclick="submitCreateGroup()">Create Group</button>
     </div>
   </div>
-
-  <!-- Manage Group Modal (Admin only) -->
   <div class="modal-overlay" id="manage-group-modal">
     <div class="modal-card">
       <div class="modal-header">
         <span>Manage Group</span>
-        <button class="modal-close" onclick="closeModal('manage-group-modal')">✕</button>
+        <button class="modal-close" onclick="closeModal('manage-group-modal')">ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¢</button>
       </div>
       <div class="form-group" style="margin-bottom: 8px;">
         <label>Rename Group</label>
@@ -149,13 +129,11 @@
       <button class="btn" style="padding: 8px; font-size: 13px; background: rgba(255,255,255,0.08);" onclick="closeModal('manage-group-modal')">Done</button>
     </div>
   </div>
-
-  <!-- Summary Modal -->
   <div class="modal-overlay" id="summary-modal">
     <div class="modal-card">
       <div class="modal-header">
         <span>Conversation Summary</span>
-        <button class="modal-close" onclick="closeModal('summary-modal')">✕</button>
+        <button class="modal-close" onclick="closeModal('summary-modal')">ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¢</button>
       </div>
       <div class="summary-content" id="summary-text">
         <div class="modal-loading"><span class="loading-spinner"></span><span>Generating summary...</span></div>
@@ -163,13 +141,11 @@
       <button class="btn" style="padding: 8px; font-size: 13px;" onclick="closeModal('summary-modal')">Close</button>
     </div>
   </div>
-
-  <!-- Suggestion Modal -->
   <div class="modal-overlay" id="suggestion-modal">
     <div class="modal-card">
       <div class="modal-header">
         <span>Context Suggestions</span>
-        <button class="modal-close" onclick="closeModal('suggestion-modal')">✕</button>
+        <button class="modal-close" onclick="closeModal('suggestion-modal')">ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¢</button>
       </div>
       <div class="summary-content" id="suggestion-text">Generating suggestion...</div>
       <button class="btn" style="padding: 8px; font-size: 13px;" onclick="closeModal('suggestion-modal')">Close</button>

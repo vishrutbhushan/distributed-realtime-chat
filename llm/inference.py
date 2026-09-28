@@ -63,7 +63,7 @@ def _parse_smart_replies(raw: str) -> List[str] | None:
             if int(marker.group(1)) != expected_number:
                 return None
             end = markers[expected_number].start() if expected_number < 3 else len(text)
-            cleaned = text[marker.end():end].strip(" \t\r\n\"'`“”‘’")
+            cleaned = text[marker.end():end].strip(" \t\r\n\"'`Ã¢â‚¬Å“Ã¢â‚¬ÂÃ¢â‚¬ËœÃ¢â‚¬â„¢")
             if not cleaned:
                 return None
             replies.append(cleaned)
@@ -301,7 +301,7 @@ class ChatInference:
         answer = re.sub(r"^You(?:'re| are) currently chatting with [^.]+\.\s*", "", answer, flags=re.IGNORECASE).strip()
 
         # Clean bullet points / line breaks into clean continuous text
-        lines = [re.sub(r"^[-*•]\s*", "", l.strip()) for l in answer.splitlines() if l.strip()]
+        lines = [re.sub(r"^[-*Ã¢â‚¬Â¢]\s*", "", l.strip()) for l in answer.splitlines() if l.strip()]
         if lines:
             answer = " ".join(lines)
 

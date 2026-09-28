@@ -12,7 +12,7 @@ Earlier messages (latest excluded):
 Example:
 Incoming message: hi hows things
 Possible replies JSON:
-{{"replies":["Good, thanks! How about you?","Doing okay—how are you?","Pretty good! How’s your day going?"]}}
+{{"replies":["Good, thanks! How about you?","Doing okayÃ¢â‚¬â€how are you?","Pretty good! HowÃ¢â‚¬â„¢s your day going?"]}}
 
 For the actual incoming message, write three distinct, standalone options. Each must answer or directly respond to it before optionally asking something back. Do not start a new topic or use a generic check-in as a substitute for a reply.
 Use relevant chat details without inventing facts, deadlines, or promises. Do not take over work assigned to someone else; ask if ownership is unclear.

@@ -114,7 +114,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
         path = parsed.path
         qs = urllib.parse.parse_qs(parsed.query)
 
-        # ── Serve Static Assets (HTML, CSS, JS) ──────────────────────────────
+        # Ã¢â€â‚¬Ã¢â€â‚¬ Serve Static Assets (HTML, CSS, JS) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         if path in ("/", "/index.html") or path.startswith("/css/") or path.startswith("/js/"):
             rel = "index.html" if path in ("/", "/index.html") else path.lstrip("/")
             file_path = os.path.join(_ROOT, "web", rel)
