@@ -7,7 +7,5 @@ cd /d "%PROJECT_ROOT%"
 echo Stopping application cluster and cleaning up resources...
 docker compose down -v --remove-orphans
 echo.
-echo =================================================================
-echo  Cluster stopped successfully. No lingering containers remain.
-echo =================================================================
+echo  Cluster stopped successfully.
 exit /b 0

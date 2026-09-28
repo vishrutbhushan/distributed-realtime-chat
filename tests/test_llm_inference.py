@@ -104,8 +104,8 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(user_message, "hi hows things")
         self.assertEqual(user_message.count("hi hows things"), 1)
         self.assertIn('"replies":["Good, thanks! How about you?"', system_prompt)
-        self.assertIn('"Doing okay—how are you?"', system_prompt)
-        self.assertIn('"Pretty good! How’s your day going?"', system_prompt)
+        self.assertIn('"Doing okay - how are you?"', system_prompt)
+        self.assertIn('"Pretty good! How\'s your day going?"', system_prompt)
 
     def test_llm_service_uses_signed_in_user_metadata_for_reply_voice(self):
         model = FakeModel("1) Sure, I can check.\n2) Which error should I check?\n3) Send me the failing test.")
