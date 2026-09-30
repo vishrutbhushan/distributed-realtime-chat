@@ -1,10 +1,4 @@
-"""
-LLM inference engine.
-
-Loads a local CPU-optimized GGUF model (Qwen2.5-1.5B-Instruct) via llama-cpp-python,
-with concurrency throttling via BoundedSemaphore, timeout guards, and graceful
-mock fallback if no local model is installed.
-"""
+"""Local GGUF model inference with CPU, GPU, and mock modes."""
 
 import logging
 import json
@@ -39,7 +33,7 @@ ws ::= [ \t\n\r]*
 
 
 def _parse_smart_replies(raw: str) -> List[str] | None:
-    """Parse constrained JSON replies, with legacy numbered-text support for mocks."""
+    """Parse the three reply format returned by the model."""
     text = (raw or "").strip()
     try:
         payload = json.loads(text)
@@ -81,7 +75,7 @@ def _parse_smart_replies(raw: str) -> List[str] | None:
 
 
 def _bound_messages(messages: Iterable[str], max_chars: int = MAX_CONTEXT_CHARS) -> List[str]:
-    """Keep the newest conversation lines within a conservative prompt character budget."""
+    """Keep the newest messages within the prompt limit."""
     bounded = []
     used = 0
     for message in reversed(list(messages)):
@@ -98,7 +92,7 @@ def _bound_messages(messages: Iterable[str], max_chars: int = MAX_CONTEXT_CHARS)
 
 
 class ChatInference:
-    """Shared local LLM inference instance; bounded calls run one at a time."""
+    """Thread-safe wrapper around one local model."""
 
     def __init__(self, model=None, is_mock: bool = False):
         self._model = model
@@ -109,13 +103,7 @@ class ChatInference:
 
     @staticmethod
     def _detect_gpu_layers() -> int:
-        """
-        Detect hardware acceleration capability:
-        - Explicit MODEL_N_GPU_LAYERS override
-        - Apple Silicon Metal (macOS M1/M2/M3/M4) -> -1 (all layers)
-        - NVIDIA CUDA (Linux / Windows) -> -1 (all layers)
-        - Fallback: 0 (CPU)
-        """
+        """Return the configured GPU layer count, or detect common GPUs."""
         env_val = os.environ.get("MODEL_N_GPU_LAYERS")
         if env_val is not None:
             try:
@@ -125,13 +113,11 @@ class ChatInference:
             except ValueError:
                 pass
 
-        # 1. Apple Silicon Metal (macOS)
         import platform
         if platform.system() == "Darwin" and platform.machine() in ("arm64", "aarch64"):
             logger.info("[LLM] Apple Silicon detected (Metal acceleration enabled).")
             return -1
 
-        # 2. NVIDIA CUDA check via torch if installed
         try:
             import torch
             if torch.cuda.is_available():
@@ -143,13 +129,11 @@ class ChatInference:
         except Exception:
             pass
 
-        # 3. NVIDIA CUDA check via nvidia-smi command
         import shutil
         if shutil.which("nvidia-smi") is not None:
             logger.info("[LLM] NVIDIA GPU detected via nvidia-smi (CUDA acceleration enabled).")
             return -1
 
-        # 4. Linux /proc/driver/nvidia check
         if os.path.exists("/proc/driver/nvidia"):
             logger.info("[LLM] NVIDIA driver detected via /proc/driver/nvidia (CUDA acceleration enabled).")
             return -1
@@ -159,11 +143,7 @@ class ChatInference:
 
     @classmethod
     def from_env(cls):
-        """
-        Load model specified by MODEL_PATH.
-        Auto-detects GPU (CUDA / Apple Silicon Metal) and offloads layers if available.
-        Falls back cleanly to CPU or rule-based mock engine.
-        """
+        """Load the configured model, using CPU when acceleration is unavailable."""
         model_path = Path(os.environ.get("MODEL_PATH", DEFAULT_MODEL_PATH))
         if not model_path.is_file():
             logger.warning("[LLM] Model not found at %s. Falling back to rule-based mock engine.", model_path)
@@ -296,16 +276,13 @@ class ChatInference:
                 raise RuntimeError("The local model returned an empty response")
             return answer
 
-        # Clean up any accidental model headers or intros
         answer = re.sub(r"^(?:(?:summary|recap)(?:\s+for\s+[^:\n]+)?:\s*)+", "", answer, flags=re.IGNORECASE).strip()
         answer = re.sub(r"^You(?:'re| are) currently chatting with [^.]+\.\s*", "", answer, flags=re.IGNORECASE).strip()
 
-        # Clean bullet points / line breaks into clean continuous text
         lines = [re.sub(r"^[-*]\s*", "", l.strip()) for l in answer.splitlines() if l.strip()]
         if lines:
             answer = " ".join(lines)
 
-        # Remove repetitive looped sentences
         sentences = re.split(r"(?<=[.!?])\s+", answer)
         deduped = []
         for s in sentences:
@@ -322,7 +299,7 @@ class ChatInference:
         return answer
 
     def _mock_complete(self, prompt: str) -> str:
-        """Rule-based mock generator for development and environments without GGUF weights."""
+        """Return deterministic responses when no model is available."""
         if "three distinct, standalone options" in prompt.lower():
             return (
                 "1) Sounds good, thanks for confirming!\n"
@@ -391,7 +368,6 @@ class ChatInference:
         prompt = format_summarize(context_title, _bound_messages(messages), current_user=current_user)
         raw = self._complete(prompt, max_tokens=220, temperature=0.1)
 
-        # Personalize pronouns: ensure current_user is addressed as "You" / "you"
         user = (current_user or "you").strip()
         if user and user.lower() != "you":
             raw = re.sub(rf"^(?:In this chat,\s*)?{re.escape(user)}\b", "You", raw, flags=re.IGNORECASE)
