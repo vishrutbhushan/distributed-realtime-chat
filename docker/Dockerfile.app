@@ -15,7 +15,7 @@ COPY web/       ./web/
 COPY llm/       ./llm/
 COPY tests/     ./tests/
 
-# Compile protobuf definitions Ã¢â€ â€™ generated/
+# Compile protobuf definitions into generated/
 RUN mkdir -p generated && \
     python -m grpc_tools.protoc \
         -I ./proto \
