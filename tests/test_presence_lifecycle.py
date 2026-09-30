@@ -56,7 +56,7 @@ class PresenceLifecycleTests(unittest.TestCase):
     def status(self, user_id):
         return self.auth.get_user_by_id(user_id)["status"]
 
-    def test_idle_browser_stream_stays_active_past_cli_timeout(self):
+    def test_idle_browser_stream_stays_active_past_rpc_timeout(self):
         token, user_id = self.create_user()
         self.presence.connect_stream(user_id, token, "stream-a", int(self.clock.wall()) + 1000)
 
@@ -160,15 +160,15 @@ class PresenceLifecycleTests(unittest.TestCase):
 
         self.assertEqual(self.status(user_id), "inactive")
 
-    def test_cli_activity_keeps_legacy_five_minute_presence(self):
-        token, user_id = self.create_user(client_kind="cli")
+    def test_rpc_activity_keeps_five_minute_presence(self):
+        token, user_id = self.create_user(client_kind="rpc")
         self.clock.advance(301)
         self.presence.sweep_once()
         self.assertEqual(self.status(user_id), "inactive")
 
         session = self.auth.validate_token(token)
         self.presence.note_rpc_activity(
-            user_id, token, session["expires_at"], "cli"
+            user_id, token, session["expires_at"], "rpc"
         )
         self.clock.advance(299)
         self.presence.sweep_once()

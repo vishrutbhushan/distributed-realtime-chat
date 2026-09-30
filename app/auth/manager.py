@@ -31,7 +31,7 @@ class AuthManager:
     # Signup, login, and logout
 
     def signup(
-        self, username: str, password: str, client_kind: str = "cli"
+        self, username: str, password: str, client_kind: str = "rpc"
     ) -> Tuple[bool, str, str, str, str]:
         """
         Register a new user and its first authenticated session.
@@ -101,7 +101,7 @@ class AuthManager:
             return False, "", "", "", str(exc)
 
     def login(
-        self, username: str, password: str, client_kind: str = "cli"
+        self, username: str, password: str, client_kind: str = "rpc"
     ) -> Tuple[bool, str, str, str, str]:
         """
         Authenticate an existing user.
@@ -213,14 +213,6 @@ class AuthManager:
             return None
 
         return dict(row)
-
-    def heartbeat(self, token: str):
-        """Validate a token and refresh presence only for an eligible CLI session."""
-        sess = self.validate_token(token)
-        if sess and self.presence:
-            self.presence.note_rpc_activity(
-                sess["user_id"], token, sess["expires_at"], client_kind="cli"
-            )
 
     def update_presence(self, user_id: str, status: str = "active"):
         """Explicitly update status ('active' | 'inactive') and last_seen."""

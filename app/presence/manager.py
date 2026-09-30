@@ -1,4 +1,4 @@
-"""Track online presence from live browser streams and recent CLI activity."""
+"""Track online presence from browser streams and gRPC activity."""
 
 import logging
 import threading
@@ -8,7 +8,7 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-CLI_OFFLINE_THRESHOLD = 300
+RPC_OFFLINE_THRESHOLD = 300
 STREAM_RECONNECT_GRACE = 10
 INITIAL_BROWSER_GRACE = 10
 SWEEP_INTERVAL = 1
@@ -31,7 +31,7 @@ class PresenceManager:
 
     Browser sessions are online while at least one event stream is connected,
     with a short grace after the last stream closes. Non-browser RPC clients
-    retain the legacy five-minute recent-activity policy.
+    retain a five-minute recent-activity policy.
     """
 
     def __init__(
@@ -62,10 +62,10 @@ class PresenceManager:
 
     @staticmethod
     def _normalize_kind(client_kind: str) -> str:
-        return "browser" if (client_kind or "").lower() == "browser" else "cli"
+        return "browser" if (client_kind or "").lower() == "browser" else "rpc"
 
     def register_session(
-        self, user_id: str, token: str, client_kind: str = "cli", expires_at: int = 0
+        self, user_id: str, token: str, client_kind: str = "rpc", expires_at: int = 0
     ):
         """Start presence tracking for a newly created login session."""
         if not token or not user_id:
@@ -75,7 +75,7 @@ class PresenceManager:
         state = _SessionPresence(
             user_id=user_id,
             client_kind=kind,
-            expires_at=int(expires_at or (self._wall_clock() + CLI_OFFLINE_THRESHOLD)),
+            expires_at=int(expires_at or (self._wall_clock() + RPC_OFFLINE_THRESHOLD)),
             last_activity=now,
             last_db_touch=now,
             connect_deadline=now + INITIAL_BROWSER_GRACE if kind == "browser" else None,
@@ -94,9 +94,9 @@ class PresenceManager:
         user_id: str,
         token: str,
         expires_at: int,
-        client_kind: str = "cli",
+        client_kind: str = "rpc",
     ):
-        """Refresh CLI activity; browser reads never serve as presence heartbeats."""
+        """Refresh gRPC activity; browser reads never serve as heartbeats."""
         if not token or not user_id:
             return
         now = self._monotonic()
@@ -225,7 +225,7 @@ class PresenceManager:
                 state.connect_deadline = None
                 state.disconnect_deadline = None
             else:
-                state.last_activity = now - CLI_OFFLINE_THRESHOLD
+                state.last_activity = now - RPC_OFFLINE_THRESHOLD
 
             active = self._user_is_active_locked(state.user_id)
             changed = self._write_status_locked(state.user_id, active, touch=active)
@@ -258,7 +258,7 @@ class PresenceManager:
                     return True
                 if state.disconnect_deadline is not None and state.disconnect_deadline > now:
                     return True
-            elif now - state.last_activity < CLI_OFFLINE_THRESHOLD:
+            elif now - state.last_activity < RPC_OFFLINE_THRESHOLD:
                 return True
         return False
 

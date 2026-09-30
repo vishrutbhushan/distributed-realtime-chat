@@ -10,7 +10,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY proto/     ./proto/
 COPY app/       ./app/
 COPY storage/   ./storage/
-COPY client/    ./client/
 COPY web/       ./web/
 COPY llm/       ./llm/
 COPY tests/     ./tests/

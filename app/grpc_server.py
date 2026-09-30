@@ -73,7 +73,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     @staticmethod
     def _client_kind(context) -> str:
         if context is None:
-            return "cli"
+            return "rpc"
         try:
             for item in context.invocation_metadata() or ():
                 key, value = (item.key, item.value) if hasattr(item, "key") else item
@@ -81,7 +81,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     return str(value).lower()
         except Exception:
             logger.debug("[AUTH] Client kind metadata was unavailable", exc_info=True)
-        return "cli"
+        return "rpc"
 
     def _require_auth(self, token: str, context, *, record_activity: bool = True) -> dict:
         if not token:

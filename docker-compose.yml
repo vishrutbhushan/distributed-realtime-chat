@@ -1,12 +1,10 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Distributed Real-time Chat and Collaboration Tool — Docker Compose
+# Distributed Real-time Chat and Collaboration Tool - Docker Compose
 # Milestone 1: App Node (gRPC + Web UI) + Dedicated Local LLM Server + Demo Runner
 # Web UI Gateway available at: http://localhost:8000
-# ─────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── LLM Server (Dedicated Instance, port 50060) ────────────────────────────
+  # LLM server
   llm-server:
     build:
       context: .
@@ -37,7 +35,7 @@ services:
       retries: 12
       start_period: 120s
 
-  # ── App Node 1 (Monolith: gRPC :50051 + Web Gateway :8000) ─────────────────
+  # Application server and web gateway
   app-node-1:
     build:
       context: .
