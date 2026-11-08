@@ -131,6 +131,19 @@ class Database:
                     uploaded_at      INTEGER NOT NULL,
                     FOREIGN KEY (owner_id) REFERENCES users(user_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS raft_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS raft_log (
+                    log_index    INTEGER PRIMARY KEY,
+                    term         INTEGER NOT NULL,
+                    command_type TEXT NOT NULL,
+                    payload      TEXT NOT NULL,
+                    request_id   TEXT
+                );
             """)
             self._conn.commit()
 

@@ -28,8 +28,8 @@ bash scripts/start.sh
 ```
 
 Once running:
-- Open **[http://localhost:8000](http://localhost:8000)** in your browser to sign up and chat.
-- Live logs stream in the console.
+- Open **[http://localhost:8000](http://localhost:8000)** (Node 1), **[http://localhost:8001](http://localhost:8001)** (Node 2), or **[http://localhost:8002](http://localhost:8002)** (Node 3) in your browser.
+- Live cluster logs stream in the console.
 - Press **`Ctrl+C`** to gracefully shut down the cluster and clean up volumes.
 ---
 
@@ -37,20 +37,18 @@ Once running:
 
 | # | Requirement | Implementation Details |
 |---|-------------|------------------------|
-| **1** | **Zero default channels & users** | Database starts completely empty (`/data/chat.db`). Users must sign up. |
-| **2** | **Web UI for all users** | Embedded HTTP Gateway on port 8000 serving clean modular HTML/CSS/JS and translating REST calls into gRPC. |
-| **3** | **Signup & Login restrictions** | Username: 3–20 alphanumeric chars/underscores (`^[a-zA-Z0-9_]{3,20}$`). Password: minimum 4 chars. |
-| **4** | **Active / Inactive Status** | Status is set to `active` upon signup/login, and `inactive` upon logout. Tracked in `users` table and refreshed via heartbeat. |
-| **5** | **1-on-1 Direct Messaging** | `SendDirectMessage` and `GetDirectMessages` RPCs. Messages indexed by `(sender_id, recipient_id, timestamp)`. Idempotency via `client_request_id`. |
-| **6** | **PDF & Image File Sharing** | `UploadFile` and `DownloadFile` RPCs. Binary stored in `/data/files/`, metadata in SQLite `files` table. Inline rendering for images, downloadable card for PDFs. |
-| **7** | **Group Creation with User Checklist** | `CreateGroup` accepts a name and checklist of initial member user IDs during creation. Creator is `ADMIN` by default; members immediately see the group. |
-| **8** | **Admin-only Group Controls** | `UpdateGroup` enforces that only group `ADMIN` can rename group, add members, remove members, or promote members to admin. Non-admin attempts return `Permission Denied`. |
-| **9** | **Standalone LLM Instance** | Dedicated container (`llm-server`) listening on gRPC port `50060`. CPU-optimized mock active; Llama.cpp, Transformers, and Ollama backends ready to uncomment. |
-| **10** | **LLM Features** | a) Smart Replies (generates 3 concise suggestions). b) Summarize (generates bullet-point digest). |
-| **11** | **Pass Full Chat History** | App node passes the entire conversation history to the LLM server for context-aware generation. |
-| **12** | **UI Options** | Web UI provides dedicated buttons for "Smart Replies" (clickable pills) and "Summarize" (modal summary). |
-| **13** | **Proper Database Schema** | Clean SQLite tables: `users`, `sessions`, `groups`, `group_members`, `messages`, `files`. |
-| **14** | **gRPC Inter-service Architecture** | gRPC exclusively used for all client-to-app and app-to-LLM communication. |
+| **1** | **Raft Consensus & Replication (M2)** | Complete Raft protocol (`proto/raft.proto`, `raft/node.py`): randomized election timer (150-350ms), heartbeat (50ms), `RequestVote`, `AppendEntries`, majority quorum commit ($N/2 + 1$), sequential state machine application. |
+| **2** | **Fault Tolerance & Recovery (M2)** | Any 1 node in the 3-node cluster can crash without downtime or data loss. Remaining 2 nodes elect a new leader. Rejoining node automatically catches up via `AppendEntries`. |
+| **3** | **Zero default channels & users** | Database starts completely empty (`/data/chat.db`). Users must sign up. |
+| **4** | **Web UI on each App Node** | Embedded HTTP Gateway on ports 8000/8001/8002 serving clean modular HTML/CSS/JS and translating REST calls into gRPC. |
+| **5** | **Signup & Login restrictions** | Username: 3–20 alphanumeric chars/underscores (`^[a-zA-Z0-9_]{3,20}$`). Password: minimum 4 chars. |
+| **6** | **Active / Inactive Status** | Status is set to `active` upon signup/login, and `inactive` upon logout. Tracked in `users` table and refreshed via heartbeat sweeper. |
+| **7** | **1-on-1 Direct Messaging** | `SendDirectMessage` and `GetDirectMessages` RPCs replicated via Raft. Messages indexed by `(sender_id, recipient_id, timestamp)`. Idempotency via `client_request_id`. |
+| **8** | **PDF & Image File Sharing** | `UploadFile` and `DownloadFile` RPCs. Binary stored in `/data/files/`, metadata replicated via Raft in SQLite `files` table. |
+| **9** | **Group Creation & Admin Controls** | `CreateGroup` and `UpdateGroup` replicated via Raft. Only group `ADMIN` can rename group, add members, remove members, or promote members to admin. |
+| **10** | **Standalone LLM Instance** | Dedicated container (`llm-server`) listening on gRPC port `50060`. CPU-optimized local Qwen2.5-1.5B GGUF with mock fallback. |
+| **11** | **LLM Features** | a) Smart Replies (generates 3 concise suggestions). b) Summarize (generates bullet-point digest over full history). |
+| **12** | **Assignment Explicit RPC Signatures** | Exposes `login`, `logout`, `post`, `get`, `processBusinessRequest`, `getLLMAnswer`, `requestVote`, and `appendEntries`. |
 
 ---
 

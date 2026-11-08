@@ -52,7 +52,7 @@ docker compose build || {
 }
 
 printf 'Starting the app and local model services...\n'
-docker compose up --no-build --detach llm-server app-node-1 || {
+docker compose up --no-build --detach llm-server app-node-1 app-node-2 app-node-3 || {
   printf 'Docker Compose could not start the app and model services.\n' >&2
   exit 1
 }
@@ -80,7 +80,7 @@ wait_for_service() {
   esac
 }
 
-services=(llm-server app-node-1)
+services=(llm-server app-node-1 app-node-2 app-node-3)
 deadline=$((SECONDS + 600))
 while true; do
   all_healthy=1
@@ -99,7 +99,7 @@ while true; do
   fi
   if [ "$SECONDS" -ge "$deadline" ]; then
     printf 'Timed out waiting for service health. Recent logs follow:\n' >&2
-    docker compose logs --no-color --tail=100 llm-server app-node-1 >&2 || true
+    docker compose logs --no-color --tail=100 llm-server app-node-1 app-node-2 app-node-3 >&2 || true
     exit 1
   fi
   sleep 3
@@ -107,14 +107,18 @@ done
 
 printf '\n'
 printf '=================================================================\n'
-printf ' DISTRIBUTED REAL-TIME CHAT & COLLABORATION PLATFORM\n'
+printf ' DISTRIBUTED REAL-TIME CHAT & COLLABORATION PLATFORM (M2 RAFT)\n'
 printf '=================================================================\n'
-printf ' Web UI available at: http://localhost:8000\n'
-printf ' gRPC Server port:    localhost:50051\n'
+printf ' Web UI Node 1:       http://localhost:8000\n'
+printf ' Web UI Node 2:       http://localhost:8001\n'
+printf ' Web UI Node 3:       http://localhost:8002\n'
+printf ' gRPC App Node 1:     localhost:50051 (Raft: 50071)\n'
+printf ' gRPC App Node 2:     localhost:50052 (Raft: 50072)\n'
+printf ' gRPC App Node 3:     localhost:50053 (Raft: 50073)\n'
 printf ' LLM Server port:     localhost:50060\n\n'
-printf ' Cluster is live and running. Open http://localhost:8000 in browser.\n'
+printf ' 3-Node Raft cluster is live. Open http://localhost:8000 in browser.\n'
 printf ' Press Ctrl+C to shut down.\n'
 printf '=================================================================\n\n'
 
 # Stream service logs live until user presses Ctrl+C
-docker compose logs -f --tail=20 app-node-1 llm-server
+docker compose logs -f --tail=20 app-node-1 app-node-2 app-node-3 llm-server

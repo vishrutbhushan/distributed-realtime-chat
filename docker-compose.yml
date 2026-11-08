@@ -1,7 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Distributed Real-time Chat and Collaboration Tool — Docker Compose
-# Milestone 1: App Node (gRPC + Web UI) + Dedicated Local LLM Server + Demo Runner
-# Web UI Gateway available at: http://localhost:8000
+# Milestone 2: 3-Node Raft Cluster + Dedicated Local LLM Server
+# Web UI Gateway available at:
+#   Node 1: http://localhost:8000
+#   Node 2: http://localhost:8001
+#   Node 3: http://localhost:8002
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -32,7 +35,7 @@ services:
       retries: 12
       start_period: 120s
 
-  # ── App Node 1 (Monolith: gRPC :50051 + Web Gateway :8000) ─────────────────
+  # ── App Node 1 (Raft Peer 1) ───────────────────────────────────────────────
   app-node-1:
     build:
       context: .
@@ -41,10 +44,14 @@ services:
     ports:
       - "50051:50051"
       - "8000:8000"
+      - "50071:50071"
     environment:
       NODE_ID:           "node-1"
       PORT:              "50051"
       WEB_PORT:          "8000"
+      RAFT_PORT:         "50071"
+      RAFT_PEERS:        "node-1=app-node-1:50071,node-2=app-node-2:50072,node-3=app-node-3:50073"
+      APP_PEERS:         "node-1=app-node-1:50051,node-2=app-node-2:50052,node-3=app-node-3:50053"
       DB_PATH:           "/data/chat.db"
       FILE_STORAGE_PATH: "/data/files/"
       LLM_SERVER:        "llm-server:50060"
@@ -62,8 +69,78 @@ services:
       retries: 10
       start_period: 15s
 
+  # ── App Node 2 (Raft Peer 2) ───────────────────────────────────────────────
+  app-node-2:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    container_name: app-node-2
+    ports:
+      - "50052:50052"
+      - "8001:8001"
+      - "50072:50072"
+    environment:
+      NODE_ID:           "node-2"
+      PORT:              "50052"
+      WEB_PORT:          "8001"
+      RAFT_PORT:         "50072"
+      RAFT_PEERS:        "node-1=app-node-1:50071,node-2=app-node-2:50072,node-3=app-node-3:50073"
+      APP_PEERS:         "node-1=app-node-1:50051,node-2=app-node-2:50052,node-3=app-node-3:50053"
+      DB_PATH:           "/data/chat.db"
+      FILE_STORAGE_PATH: "/data/files/"
+      LLM_SERVER:        "llm-server:50060"
+    volumes:
+      - node2-data:/data
+    networks:
+      - chat-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import grpc; ch=grpc.insecure_channel('localhost:50052');\
+              grpc.channel_ready_future(ch).result(timeout=2); ch.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ── App Node 3 (Raft Peer 3) ───────────────────────────────────────────────
+  app-node-3:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.app
+    container_name: app-node-3
+    ports:
+      - "50053:50053"
+      - "8002:8002"
+      - "50073:50073"
+    environment:
+      NODE_ID:           "node-3"
+      PORT:              "50053"
+      WEB_PORT:          "8002"
+      RAFT_PORT:         "50073"
+      RAFT_PEERS:        "node-1=app-node-1:50071,node-2=app-node-2:50072,node-3=app-node-3:50073"
+      APP_PEERS:         "node-1=app-node-1:50051,node-2=app-node-2:50052,node-3=app-node-3:50053"
+      DB_PATH:           "/data/chat.db"
+      FILE_STORAGE_PATH: "/data/files/"
+      LLM_SERVER:        "llm-server:50060"
+    volumes:
+      - node3-data:/data
+    networks:
+      - chat-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import grpc; ch=grpc.insecure_channel('localhost:50053');\
+              grpc.channel_ready_future(ch).result(timeout=2); ch.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
 volumes:
   node1-data:
+  node2-data:
+  node3-data:
 
 networks:
   chat-net:

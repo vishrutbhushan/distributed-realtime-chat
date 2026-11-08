@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package raft;
+
+// ─────────────────────────────────────────────────────────────
+// Log Entry
+// ─────────────────────────────────────────────────────────────
+
+message LogEntry {
+  int64  index        = 1;
+  int64  term         = 2;
+  string command_type = 3;  // e.g. "SEND_DM", "SEND_GROUP_MSG", "CREATE_GROUP", "UPDATE_GROUP", "SIGNUP"
+  string payload      = 4;  // JSON-encoded command details
+  string request_id   = 5;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Assignment Required Signatures (Page 7)
+// ─────────────────────────────────────────────────────────────
+
+message RequestVoteArgs {
+  string from           = 1; // candidateId
+  string to             = 2;
+  int64  term           = 3;
+  int64  last_log_index = 4;
+  int64  last_log_term  = 5;
+}
+
+message RequestVoteReply {
+  string from         = 1;
+  string to           = 2;
+  int64  term         = 3;
+  bool   vote_granted = 4;
+}
+
+message AppendEntriesArgs {
+  string            from         = 1; // leaderId
+  string            to           = 2;
+  int64             term         = 3;
+  int64             prev_index   = 4;
+  int64             prev_term    = 5;
+  int64             commit_index = 6;
+  repeated LogEntry entries      = 7;
+}
+
+message AppendEntriesReply {
+  string from           = 1;
+  string to             = 2;
+  int64  term           = 3;
+  bool   entry_appended = 4;
+  int64  match_index    = 5;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Raft Service Definition
+// ─────────────────────────────────────────────────────────────
+
+service RaftService {
+  rpc RequestVote(RequestVoteArgs)       returns (RequestVoteReply);
+  rpc AppendEntries(AppendEntriesArgs)   returns (AppendEntriesReply);
+}

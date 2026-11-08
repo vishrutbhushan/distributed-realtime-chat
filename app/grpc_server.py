@@ -7,14 +7,17 @@ Handles:
 - Group chat creation with member selection checklist and Admin controls
 - File sharing (images and PDFs) with byte verification
 - LLM smart replies & summarization over full conversation history
+- Raft Consensus replication for strong consistency and fault tolerance
 - Assignment explicit RPC signatures: Post, Get, ProcessBusinessRequest
 """
 
 import json
 import logging
 import queue
+import threading
 import time
 import uuid
+from typing import Dict, Optional
 
 import grpc
 
@@ -23,10 +26,17 @@ import chat_pb2_grpc
 import llm_pb2
 import llm_pb2_grpc
 
-from app.auth.manager import AuthManager
+from app.auth.manager import (
+    MIN_PASSWORD_LEN,
+    SESSION_TTL,
+    USERNAME_REGEX,
+    AuthManager,
+    _hash,
+)
 from app.chat.manager import ChatManager
 from app.files.manager import FileManager
 from app.presence.manager import PresenceManager
+from raft.node import NodeState, RaftNode
 from storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -51,16 +61,34 @@ def create_llm_stub(llm_server_addr: str):
 
 class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
 
-    def __init__(self, db: Database, node_id: str, file_storage_path: str, llm_server_addr: str):
+    def __init__(
+        self,
+        db: Database,
+        node_id: str,
+        file_storage_path: str,
+        llm_server_addr: str,
+        raft_node: Optional[RaftNode] = None,
+        app_peers: Optional[Dict[str, str]] = None,
+    ):
         self.db = db
-        self.node_id = node_id
+        self.node_id = str(node_id)
         self.auth = AuthManager(db)
         self.chat = ChatManager(db)
         self.presence = PresenceManager(db)
         self.files = FileManager(db, file_storage_path)
         self.llm = create_llm_stub(llm_server_addr)
 
-        logger.info("[GRPC] ChatServicer initialized with 0 default users and 0 default channels.")
+        self.raft = raft_node
+        self.app_peers = dict(app_peers or {})
+        self._app_stubs: Dict[str, chat_pb2_grpc.ChatServiceStub] = {}
+        self._stub_lock = threading.Lock()
+
+        logger.info(
+            "[GRPC] ChatServicer initialized (node_id=%s, raft=%s, peers=%s)",
+            self.node_id,
+            bool(self.raft),
+            list(self.app_peers.keys()),
+        )
 
     # ── Auth Helper ───────────────────────────────────────────────────────────
 
@@ -72,18 +100,104 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired session token")
         return sess
 
+    # ── Leader Forwarding ─────────────────────────────────────────────────────
+
+    def _get_app_stub(self, peer_id: str) -> Optional[chat_pb2_grpc.ChatServiceStub]:
+        if not self.app_peers or peer_id not in self.app_peers:
+            return None
+        with self._stub_lock:
+            if peer_id not in self._app_stubs:
+                addr = self.app_peers[peer_id]
+                ch = grpc.insecure_channel(
+                    addr,
+                    options=[
+                        ("grpc.max_send_message_length", 64 * 1024 * 1024),
+                        ("grpc.max_receive_message_length", 64 * 1024 * 1024),
+                    ],
+                )
+                self._app_stubs[peer_id] = chat_pb2_grpc.ChatServiceStub(ch)
+            return self._app_stubs[peer_id]
+
+    def _forward_to_leader(self, method_name: str, request, context):
+        """Transparently forward a write RPC to current Raft leader."""
+        if not self.raft:
+            return None
+        leader_id = self.raft.leader_id
+        if not leader_id:
+            context.abort(grpc.StatusCode.UNAVAILABLE, "Raft leader election in progress; please retry shortly")
+        if leader_id == self.node_id:
+            return None  # We are leader
+
+        stub = self._get_app_stub(leader_id)
+        if not stub:
+            context.abort(grpc.StatusCode.UNAVAILABLE, f"Cannot reach Raft leader node {leader_id}")
+
+        logger.info("[FORWARD] Forwarding %s from follower %s to leader %s", method_name, self.node_id, leader_id)
+        try:
+            fn = getattr(stub, method_name)
+            return fn(request)
+        except grpc.RpcError as exc:
+            context.abort(exc.code(), exc.details())
+
     # ── Authentication RPCs ───────────────────────────────────────────────────
 
     def Signup(self, request, context):
         logger.info("[RPC] Signup request for username: %s", request.username)
-        ok, token, uid, uname, msg = self.auth.signup(request.username, request.password)
-        return chat_pb2.SignupResponse(
-            success=ok,
-            token=token,
-            user_id=uid,
-            username=uname,
-            message=msg,
-        )
+
+        # If clustered and we are follower, forward to leader
+        if self.raft and len(self.raft.peers) > 1 and self.raft.state != NodeState.LEADER:
+            return self._forward_to_leader("Signup", request, context)
+
+        username = (request.username or "").strip()
+        if not USERNAME_REGEX.match(username):
+            return chat_pb2.SignupResponse(
+                success=False,
+                message="Username must be 3-20 alphanumeric characters or underscores.",
+            )
+        if not request.password or len(request.password) < MIN_PASSWORD_LEN:
+            return chat_pb2.SignupResponse(
+                success=False,
+                message=f"Password must be at least {MIN_PASSWORD_LEN} characters long.",
+            )
+
+        # Duplicate check
+        row = self.db.fetchone("SELECT user_id FROM users WHERE username = ?", (username,))
+        if row:
+            return chat_pb2.SignupResponse(success=False, message="Username already exists. Please choose another.")
+
+        user_id = str(uuid.uuid4())
+        token = str(uuid.uuid4())
+        now = int(time.time())
+
+        payload = {
+            "user_id": user_id,
+            "username": username,
+            "password_hash": _hash(request.password),
+            "token": token,
+            "created_at": now,
+            "expires_at": now + SESSION_TTL,
+        }
+
+        if self.raft:
+            ok, err, _, res = self.raft.propose("SIGNUP", payload)
+            if not ok:
+                return chat_pb2.SignupResponse(success=False, message=f"Consensus error: {err}")
+            return chat_pb2.SignupResponse(
+                success=True,
+                token=token,
+                user_id=user_id,
+                username=username,
+                message="Account created successfully",
+            )
+        else:
+            ok, tok, uid, uname, msg = self.auth.signup(request.username, request.password)
+            return chat_pb2.SignupResponse(
+                success=ok,
+                token=tok,
+                user_id=uid,
+                username=uname,
+                message=msg,
+            )
 
     def Login(self, request, context):
         logger.info("[RPC] Login request for username: %s", request.username)
@@ -132,7 +246,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 username=u["username"],
                 status=u["status"],
                 last_seen=u["last_seen"],
-            )
+            ),
         )
 
     def UpdatePresence(self, request, context):
@@ -143,20 +257,61 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ── 1-on-1 Direct Messaging RPCs ──────────────────────────────────────────
 
     def SendDirectMessage(self, request, context):
+        if self.raft and len(self.raft.peers) > 1 and self.raft.state != NodeState.LEADER:
+            return self._forward_to_leader("SendDirectMessage", request, context)
+
         sess = self._require_auth(request.token, context)
-        ok, msg, err = self.chat.send_dm(
-            sender_id=sess["user_id"],
-            recipient_id=request.recipient_user_id,
-            content=request.content,
-            client_request_id=request.client_request_id or None,
-            file_id=request.file_id or None,
-        )
-        if ok:
-            return chat_pb2.SendMessageResponse(
-                success=True,
-                message=self._to_message_proto(msg),
+        rcpt = self.db.fetchone("SELECT user_id, username FROM users WHERE user_id = ?", (request.recipient_user_id,))
+        if not rcpt:
+            return chat_pb2.SendMessageResponse(success=False, error="Recipient user not found")
+
+        c_req_id = request.client_request_id or None
+        if c_req_id:
+            existing = self.db.fetchone(
+                """
+                SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
+                FROM messages m
+                JOIN users u ON m.sender_id = u.user_id
+                LEFT JOIN files f ON m.file_id = f.file_id
+                WHERE m.client_request_id = ?
+                """,
+                (c_req_id,),
             )
-        return chat_pb2.SendMessageResponse(success=False, error=err)
+            if existing:
+                return chat_pb2.SendMessageResponse(success=True, message=self._to_message_proto(dict(existing)))
+
+        msg_id = str(uuid.uuid4())
+        ts = int(time.time() * 1000)
+        payload = {
+            "message_id": msg_id,
+            "sender_id": sess["user_id"],
+            "recipient_id": request.recipient_user_id,
+            "content": request.content,
+            "file_id": request.file_id or None,
+            "timestamp": ts,
+            "client_request_id": c_req_id,
+        }
+
+        if self.raft:
+            ok, err, _, res = self.raft.propose("SEND_DM", payload, request_id=c_req_id or "")
+            if not ok:
+                return chat_pb2.SendMessageResponse(success=False, error=f"Consensus error: {err}")
+            msg_data = res.get("message", payload)
+            msg_data["sender_username"] = sess["username"]
+            return chat_pb2.SendMessageResponse(success=True, message=self._to_message_proto(msg_data))
+        else:
+            ok, msg, err = self.chat.send_dm(
+                sender_id=sess["user_id"],
+                recipient_id=request.recipient_user_id,
+                content=request.content,
+                client_request_id=c_req_id,
+                file_id=request.file_id or None,
+            )
+            return chat_pb2.SendMessageResponse(
+                success=ok,
+                message=self._to_message_proto(msg) if ok else None,
+                error=err,
+            )
 
     def GetDirectMessages(self, request, context):
         sess = self._require_auth(request.token, context)
@@ -173,53 +328,128 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ── Group Management & Messaging RPCs ─────────────────────────────────────
 
     def CreateGroup(self, request, context):
+        if self.raft and len(self.raft.peers) > 1 and self.raft.state != NodeState.LEADER:
+            return self._forward_to_leader("CreateGroup", request, context)
+
         sess = self._require_auth(request.token, context)
+        name = (request.name or "").strip()
+        if not name:
+            return chat_pb2.CreateGroupResponse(success=False, message="Group name cannot be empty")
+
+        group_id = str(uuid.uuid4())
+        now = int(time.time())
         member_ids = list(request.initial_member_user_ids)
-        ok, g, msg = self.chat.create_group(
-            name=request.name,
-            creator_id=sess["user_id"],
-            initial_member_ids=member_ids,
-        )
-        if ok:
+
+        payload = {
+            "group_id": group_id,
+            "name": name,
+            "creator_id": sess["user_id"],
+            "initial_member_ids": member_ids,
+            "created_at": now,
+        }
+
+        if self.raft:
+            ok, err, _, res = self.raft.propose("CREATE_GROUP", payload)
+            if not ok:
+                return chat_pb2.CreateGroupResponse(success=False, message=f"Consensus error: {err}")
+            grp = res.get("group", payload)
             return chat_pb2.CreateGroupResponse(
                 success=True,
                 group=chat_pb2.Group(
-                    group_id=g["group_id"],
-                    name=g["name"],
-                    created_by=g["created_by"],
-                    created_by_name=g.get("created_by_name", ""),
-                    created_at=g["created_at"],
-                    member_count=g.get("member_count", 1),
-                    user_role=g.get("user_role", "ADMIN"),
+                    group_id=grp["group_id"],
+                    name=grp["name"],
+                    created_by=grp["creator_id"],
+                    created_by_name=sess["username"],
+                    created_at=grp["created_at"],
+                    member_count=grp.get("member_count", len(member_ids) + 1),
+                    user_role="ADMIN",
                 ),
-                message=msg,
+                message="Group created successfully",
             )
-        return chat_pb2.CreateGroupResponse(success=False, message=msg)
+        else:
+            ok, g, msg = self.chat.create_group(
+                name=request.name,
+                creator_id=sess["user_id"],
+                initial_member_ids=member_ids,
+            )
+            if ok:
+                return chat_pb2.CreateGroupResponse(
+                    success=True,
+                    group=chat_pb2.Group(
+                        group_id=g["group_id"],
+                        name=g["name"],
+                        created_by=g["created_by"],
+                        created_by_name=g.get("created_by_name", ""),
+                        created_at=g["created_at"],
+                        member_count=g.get("member_count", 1),
+                        user_role=g.get("user_role", "ADMIN"),
+                    ),
+                    message=msg,
+                )
+            return chat_pb2.CreateGroupResponse(success=False, message=msg)
 
     def UpdateGroup(self, request, context):
+        if self.raft and len(self.raft.peers) > 1 and self.raft.state != NodeState.LEADER:
+            return self._forward_to_leader("UpdateGroup", request, context)
+
         sess = self._require_auth(request.token, context)
-        ok, g, msg = self.chat.update_group(
-            group_id=request.group_id,
-            requesting_user_id=sess["user_id"],
-            action=request.action,
-            target_user_id=request.target_user_id or None,
-            new_name=request.new_name or None,
+        admin_check = self.db.fetchone(
+            "SELECT role FROM group_members WHERE group_id = ? AND user_id = ?",
+            (request.group_id, sess["user_id"]),
         )
-        if ok:
+        if not admin_check or admin_check["role"] != "ADMIN":
+            return chat_pb2.UpdateGroupResponse(
+                success=False,
+                message="Permission denied: Only group admins can perform this action",
+            )
+
+        payload = {
+            "group_id": request.group_id,
+            "requesting_user_id": sess["user_id"],
+            "action": request.action,
+            "target_user_id": request.target_user_id or None,
+            "new_name": request.new_name or None,
+        }
+
+        if self.raft:
+            ok, err, _, res = self.raft.propose("UPDATE_GROUP", payload)
+            if not ok:
+                return chat_pb2.UpdateGroupResponse(success=False, message=f"Consensus error: {err}")
+            g = res.get("group", {})
             return chat_pb2.UpdateGroupResponse(
                 success=True,
                 group=chat_pb2.Group(
-                    group_id=g["group_id"],
-                    name=g["name"],
-                    created_by=g["created_by"],
+                    group_id=g.get("group_id", request.group_id),
+                    name=g.get("name", ""),
+                    created_by=g.get("created_by", ""),
                     created_by_name=g.get("created_by_name", ""),
-                    created_at=g["created_at"],
-                    member_count=g.get("member_count", 0),
+                    created_at=g.get("created_at", 0),
+                    member_count=g.get("member_count", 1),
                     user_role="ADMIN",
                 ),
+                message=f"Group action '{request.action}' succeeded",
+            )
+        else:
+            ok, g, msg = self.chat.update_group(
+                group_id=request.group_id,
+                requesting_user_id=sess["user_id"],
+                action=request.action,
+                target_user_id=request.target_user_id or None,
+                new_name=request.new_name or None,
+            )
+            return chat_pb2.UpdateGroupResponse(
+                success=ok,
+                group=chat_pb2.Group(
+                    group_id=g.get("group_id", ""),
+                    name=g.get("name", ""),
+                    created_by=g.get("created_by", ""),
+                    created_by_name=g.get("created_by_name", ""),
+                    created_at=g.get("created_at", 0),
+                    member_count=g.get("member_count", 0),
+                    user_role="ADMIN",
+                ) if ok else None,
                 message=msg,
             )
-        return chat_pb2.UpdateGroupResponse(success=False, message=msg)
 
     def ListGroups(self, request, context):
         sess = self._require_auth(request.token, context)
@@ -258,50 +488,92 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         )
 
     def SendGroupMessage(self, request, context):
+        if self.raft and len(self.raft.peers) > 1 and self.raft.state != NodeState.LEADER:
+            return self._forward_to_leader("SendGroupMessage", request, context)
+
         sess = self._require_auth(request.token, context)
-        ok, msg, err = self.chat.send_group_message(
-            sender_id=sess["user_id"],
-            group_id=request.group_id,
-            content=request.content,
-            client_request_id=request.client_request_id or None,
-            file_id=request.file_id or None,
+        member_check = self.db.fetchone(
+            "SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?",
+            (request.group_id, sess["user_id"]),
         )
-        if ok:
-            return chat_pb2.SendMessageResponse(
-                success=True,
-                message=self._to_message_proto(msg),
+        if not member_check:
+            return chat_pb2.SendMessageResponse(success=False, error="Cannot send message: You are not a member of this group")
+
+        c_req_id = request.client_request_id or None
+        if c_req_id:
+            existing = self.db.fetchone(
+                """
+                SELECT m.*, u.username AS sender_username, f.filename, f.file_type, f.size_bytes AS file_size
+                FROM messages m
+                JOIN users u ON m.sender_id = u.user_id
+                LEFT JOIN files f ON m.file_id = f.file_id
+                WHERE m.client_request_id = ?
+                """,
+                (c_req_id,),
             )
-        return chat_pb2.SendMessageResponse(success=False, error=err)
+            if existing:
+                return chat_pb2.SendMessageResponse(success=True, message=self._to_message_proto(dict(existing)))
+
+        msg_id = str(uuid.uuid4())
+        ts = int(time.time() * 1000)
+        payload = {
+            "message_id": msg_id,
+            "sender_id": sess["user_id"],
+            "group_id": request.group_id,
+            "content": request.content,
+            "file_id": request.file_id or None,
+            "timestamp": ts,
+            "client_request_id": c_req_id,
+        }
+
+        if self.raft:
+            ok, err, _, res = self.raft.propose("SEND_GROUP_MSG", payload, request_id=c_req_id or "")
+            if not ok:
+                return chat_pb2.SendMessageResponse(success=False, error=f"Consensus error: {err}")
+            msg_data = res.get("message", payload)
+            msg_data["sender_username"] = sess["username"]
+            return chat_pb2.SendMessageResponse(success=True, message=self._to_message_proto(msg_data))
+        else:
+            ok, msg, err = self.chat.send_group_message(
+                sender_id=sess["user_id"],
+                group_id=request.group_id,
+                content=request.content,
+                client_request_id=c_req_id,
+                file_id=request.file_id or None,
+            )
+            return chat_pb2.SendMessageResponse(
+                success=ok,
+                message=self._to_message_proto(msg) if ok else None,
+                error=err,
+            )
 
     def GetGroupMessages(self, request, context):
         sess = self._require_auth(request.token, context)
-        ok, msgs, err = self.chat.get_group_history(
+        msgs = self.chat.get_group_history(
             group_id=request.group_id,
-            requesting_user_id=sess["user_id"],
+            user_id=sess["user_id"],
             limit=request.limit or 100,
             before_timestamp=request.before_timestamp,
         )
-        if not ok:
-            context.abort(grpc.StatusCode.PERMISSION_DENIED, err)
         return chat_pb2.GetMessagesResponse(
             messages=[self._to_message_proto(m) for m in msgs]
         )
 
-    # ── Server-Streaming Messages ─────────────────────────────────────────────
+    # ── Real-time Streaming RPC ───────────────────────────────────────────────
 
     def StreamMessages(self, request, context):
         sess = self._require_auth(request.token, context)
         user_id = sess["user_id"]
-        q = queue.Queue(maxsize=128)
+        q = queue.Queue(maxsize=100)
         self.chat.subscribe(user_id, q)
-        logger.info("[STREAM] User %s connected to event stream", sess["username"])
+        logger.info("[STREAM] User %s connected to real-time event stream", sess["username"])
 
         try:
             while context.is_active():
                 try:
                     event_data = q.get(timeout=1.0)
                     msg_proto = self._to_message_proto(event_data)
-                    yield chat_pb2.MessageEvent(type="NEW_MESSAGE", message=msg_proto)
+                    yield chat_pb2.MessageEvent(event_type="NEW_MESSAGE", message=msg_proto)
                 except queue.Empty:
                     pass
         except Exception as exc:
@@ -313,6 +585,9 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
     # ── File Sharing RPCs ─────────────────────────────────────────────────────
 
     def UploadFile(self, request, context):
+        if self.raft and len(self.raft.peers) > 1 and self.raft.state != NodeState.LEADER:
+            return self._forward_to_leader("UploadFile", request, context)
+
         sess = self._require_auth(request.token, context)
         ok, meta, err = self.files.upload_file(
             owner_id=sess["user_id"],
@@ -324,21 +599,27 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             request_id=request.request_id,
         )
         if not ok:
-            return chat_pb2.UploadFileResponse(success=False, error=err)
+            return chat_pb2.UploadFileResponse(success=False, message=err)
+
+        if self.raft:
+            self.raft.propose("UPLOAD_FILE_META", meta, request_id=request.request_id or "")
+
         return chat_pb2.UploadFileResponse(
             success=True,
             file=self._to_file_proto(meta),
+            message="File uploaded successfully",
         )
 
     def DownloadFile(self, request, context):
         self._require_auth(request.token, context)
         ok, data, meta, err = self.files.download_file(request.file_id)
         if not ok:
-            return chat_pb2.DownloadFileResponse(success=False, error=err)
+            return chat_pb2.DownloadFileResponse(success=False, message=err)
         return chat_pb2.DownloadFileResponse(
             success=True,
             data=data,
             file=self._to_file_proto(meta),
+            message="File downloaded successfully",
         )
 
     # ── LLM Features (Passing Full Chat History) ──────────────────────────────
@@ -400,7 +681,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 request_id=rid, success=False, error=str(exc)
             )
 
-    # ── Assignment Explicit Function Signatures ───────────────────────────────
+    # ── Assignment Explicit Function Signatures (Pages 6-7) ───────────────────
 
     def Post(self, request, context):
         """Generic post: e.g. type='signup', 'login', 'send_dm', 'send_group'."""
@@ -444,19 +725,48 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             return chat_pb2.GetResponse(status="ERROR", items=[])
 
     def ProcessBusinessRequest(self, request, context):
-        """Generic business request: handles domain-specific operations."""
+        """Handles domain-specific operations via Raft consistency (Page 7)."""
+        rid = request.request_id or str(uuid.uuid4())
         try:
-            return chat_pb2.BusinessResponse(
-                request_id=request.request_id,
-                status="OK",
-                result=json.dumps({"processed": True, "context": request.context}),
-            )
+            if self.raft and len(self.raft.peers) > 1 and self.raft.state != NodeState.LEADER:
+                return self._forward_to_leader("ProcessBusinessRequest", request, context)
+
+            payload = {
+                "request_id": rid,
+                "payload": request.payload,
+                "context": request.context,
+            }
+            if self.raft:
+                ok, err, _, res = self.raft.propose("BUSINESS_REQUEST", payload, request_id=rid)
+                if not ok:
+                    return chat_pb2.BusinessResponse(request_id=rid, status="ERROR", result=err)
+                return chat_pb2.BusinessResponse(
+                    request_id=rid,
+                    status=res.get("status", "COMPLETED"),
+                    result=res.get("result", "OK"),
+                )
+            else:
+                return chat_pb2.BusinessResponse(
+                    request_id=rid,
+                    status="OK",
+                    result=json.dumps({"processed": True, "context": request.context}),
+                )
         except Exception as exc:
-            return chat_pb2.BusinessResponse(request_id=request.request_id, status="ERROR", result=str(exc))
+            return chat_pb2.BusinessResponse(request_id=rid, status="ERROR", result=str(exc))
 
     # ── Node Status ───────────────────────────────────────────────────────────
 
     def GetNodeStatus(self, request, context):
+        if self.raft:
+            st = self.raft.status()
+            return chat_pb2.GetNodeStatusResponse(
+                node_id=st["node_id"],
+                state=st["state"],
+                term=st["term"],
+                leader_id=st["leader_id"],
+                commit_index=st["commit_index"],
+                last_applied=st["last_applied"],
+            )
         return chat_pb2.GetNodeStatusResponse(
             node_id=self.node_id,
             state="STANDALONE",

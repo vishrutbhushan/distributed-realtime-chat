@@ -56,13 +56,13 @@ try {
     }
 
     Write-Host 'Starting the app and local model services...' -ForegroundColor Cyan
-    & docker compose up --no-build --detach llm-server app-node-1
+    & docker compose up --no-build --detach llm-server app-node-1 app-node-2 app-node-3
     if ($LASTEXITCODE -ne 0) {
         throw 'Docker Compose could not start the app and model services.'
     }
 
     $Deadline = [DateTime]::UtcNow.AddMinutes(10)
-    $Services = @('llm-server', 'app-node-1')
+    $Services = @('llm-server', 'app-node-1', 'app-node-2', 'app-node-3')
     while ($true) {
         $AllHealthy = $true
         foreach ($Service in $Services) {
