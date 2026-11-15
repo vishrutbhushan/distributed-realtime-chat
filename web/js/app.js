@@ -475,3 +475,38 @@ window.addEventListener("pagehide", () => {
     navigator.sendBeacon("/api/logout", blob);
   }
 });
+
+async function updateRaftStatus() {
+  try {
+    const res = await api.getStatus();
+    if (res.success) {
+      const state = res.state || "UNKNOWN";
+      const isLeader = state === "LEADER";
+      const color = isLeader ? "#10b981" : "#38bdf8";
+      const bg = isLeader ? "rgba(16, 185, 129, 0.2)" : "rgba(56, 189, 248, 0.2)";
+
+      // Update auth screen status
+      const authElem = document.getElementById("auth-node-status");
+      if (authElem) {
+        authElem.innerHTML = `Connected to <b>${res.node_id}</b> &bull; <span style="color:${color};font-weight:bold;">${state}</span> (Term ${res.term}, Commit ${res.commit_index})`;
+      }
+
+      // Update sidebar status
+      const label = document.getElementById("raft-node-label");
+      const badge = document.getElementById("raft-state-badge");
+      if (label && badge) {
+        label.innerText = `${res.node_id} (T:${res.term} C:${res.commit_index})`;
+        badge.innerText = state;
+        badge.style.color = color;
+        badge.style.backgroundColor = bg;
+        badge.style.border = `1px solid ${color}`;
+      }
+    }
+  } catch (e) {
+    // offline or restarting
+  }
+}
+
+// Initial status check & periodic refresh
+updateRaftStatus();
+setInterval(updateRaftStatus, 2000);

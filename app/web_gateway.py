@@ -80,6 +80,23 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
 
         token = qs.get("token", [""])[0]
 
+        # GET /api/status (Raft Node Status)
+        if path == "/api/status":
+            try:
+                resp = self.grpc_stub.GetNodeStatus(chat_pb2.GetNodeStatusRequest())
+                self._send_json(200, {
+                    "success": True,
+                    "node_id": resp.node_id,
+                    "state": resp.state,
+                    "term": resp.term,
+                    "leader_id": resp.leader_id,
+                    "commit_index": resp.commit_index,
+                    "last_applied": resp.last_applied,
+                })
+            except Exception as e:
+                self._send_json(500, {"success": False, "error": str(e)})
+            return
+
         # GET /api/users
         if path == "/api/users":
             try:

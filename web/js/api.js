@@ -5,6 +5,11 @@
 const API_BASE = "";
 
 const api = {
+  async getStatus() {
+    const res = await fetch(`${API_BASE}/api/status`);
+    return res.json();
+  },
+
   async signup(username, password) {
     const res = await fetch(`${API_BASE}/api/signup`, {
       method: "POST",

@@ -30,6 +30,7 @@
 
       <button class="btn" id="auth-submit-btn" onclick="submitAuth()">Log In</button>
       <div class="auth-error" id="auth-error"></div>
+      <div class="auth-node-status" id="auth-node-status" style="margin-top: 16px; font-size: 11px; color: #64748b; text-align: center; font-family: monospace;">Loading Raft node status...</div>
     </div>
   </div>
 
@@ -43,6 +44,10 @@
           <span style="font-weight: 600; font-size: 14px;" id="current-username">Username</span>
         </div>
         <button class="btn-logout" onclick="logout()">Logout</button>
+      </div>
+      <div id="sidebar-raft-status" style="margin: 4px 12px 12px 12px; padding: 6px 10px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; font-size: 11px; font-family: monospace; color: #94a3b8; display: flex; justify-content: space-between; align-items: center;">
+        <span id="raft-node-label">node</span>
+        <span id="raft-state-badge" style="padding: 2px 6px; border-radius: 4px; font-weight: bold; background: #3b82f6; color: white;">LEADER</span>
       </div>
 
       <div class="sidebar-sections">
