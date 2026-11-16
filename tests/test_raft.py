@@ -36,6 +36,12 @@ class DirectRaftStub:
             raise RuntimeError("Peer unavailable")
         return target.AppendEntries(args, None)
 
+    def AddPeer(self, args, timeout=None):
+        target = self._get_target()
+        if not target or not target._running:
+            raise RuntimeError("Peer unavailable")
+        return target.AddPeer(args, None)
+
 
 class RaftLogAndStateMachineTests(unittest.TestCase):
     def setUp(self):
@@ -238,6 +244,57 @@ class RaftClusterIntegrationTests(unittest.TestCase):
             timeout=3.0,
         )
         self.assertTrue(ok, f"New leader proposal failed: {err}")
+
+    def test_dynamic_node_join_and_catchup(self):
+        leader = self._wait_for_leader(timeout=4.0)
+        self.assertIsNotNone(leader)
+
+        # Propose an entry while cluster has 3 nodes
+        ok, err, _, _ = leader.propose(
+            command_type="SIGNUP",
+            payload={"user_id": "u_early", "username": "early_user", "password_hash": "h", "token": "t"},
+            request_id="req-early",
+        )
+        self.assertTrue(ok, err)
+
+        # Dynamically spin up node-4 and register it with the cluster
+        td4 = tempfile.TemporaryDirectory()
+        self.temp_dirs.append(td4)
+        db4 = Database(os.path.join(td4.name, "chat.db"))
+        self.dbs.append(db4)
+
+        stubs4 = {
+            f"node-{j+1}": DirectRaftStub(lambda target_id=f"node-{j+1}": self.nodes_map.get(target_id))
+            for j in range(3)
+        }
+        peers4 = dict(self.peers)
+        peers4["node-4"] = "mock:4"
+        node4 = RaftNode(
+            node_id="node-4",
+            db=db4,
+            peers=peers4,
+            state_machine=StateMachine(db4),
+            heartbeat_interval=0.03,
+            min_election_timeout=0.15,
+            max_election_timeout=0.30,
+            peer_stubs=stubs4,
+        )
+        self.nodes.append(node4)
+        self.nodes_map["node-4"] = node4
+
+        for n in self.nodes[:3]:
+            n._peer_stubs["node-4"] = DirectRaftStub(lambda: self.nodes_map.get("node-4"))
+            n.register_peer("node-4", "mock:4", "app:4")
+
+        deadline = time.time() + 2.0
+        user_on_node4 = None
+        while time.time() < deadline:
+            user_on_node4 = db4.fetchone("SELECT * FROM users WHERE user_id = 'u_early'")
+            if user_on_node4:
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(user_on_node4, "Dynamically added node-4 should catch up existing log entries")
+        self.assertEqual(user_on_node4["username"], "early_user")
 
 
 if __name__ == "__main__":

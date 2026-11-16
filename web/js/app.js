@@ -71,6 +71,7 @@ async function logout() {
   }
   sessionStorage.removeItem("chat_session");
   sessionStorage.removeItem("chat_current_chat");
+  sessionStorage.removeItem("chat_pinned_node");
   stopEventStream();
   if (historyAbortController) historyAbortController.abort();
   historyAbortController = null;
@@ -162,14 +163,15 @@ async function runEventStream(generation) {
       if (!readyReceived) throw new Error("Event stream closed before READY");
     } catch (e) {
       if (generation !== eventGeneration || e.name === "AbortError") return;
+      try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) {}
       console.warn("Event stream disconnected; reconnecting", e);
     } finally {
       if (eventController === controller) eventController = null;
     }
 
     if (generation !== eventGeneration || !currentUser || pageSuspended) return;
-    if (Date.now() - openedAt >= 30000) retryMs = 1000;
-    const jitteredMs = Math.max(1000, Math.floor(retryMs * (0.75 + Math.random() * 0.5)));
+    if (readyReceived) retryMs = 150;
+    const jitteredMs = Math.max(150, Math.floor(retryMs * (0.85 + Math.random() * 0.3)));
     await new Promise(resolve => {
       reconnectResolver = resolve;
       reconnectTimer = setTimeout(() => {
@@ -178,7 +180,7 @@ async function runEventStream(generation) {
         resolve();
       }, jitteredMs);
     });
-    retryMs = Math.min(30000, Math.round(retryMs * 1.8));
+    retryMs = Math.min(5000, Math.round(retryMs * 1.8));
   }
 }
 
@@ -204,6 +206,9 @@ function parseSseFrame(frame) {
 
 function handleRealtimeEvent(type, data, generation) {
   if (generation !== eventGeneration) return;
+  if (data && data.node_status) {
+    renderRaftStatusBadge(data.node_status);
+  }
   if (type === "READY") {
     if (snapshotInProgress) {
       anotherSnapshotRequested = true;
@@ -1046,29 +1051,37 @@ window.addEventListener("pageshow", () => {
   if (currentUser && !eventController) startEventStream();
 });
 
+function renderRaftStatusBadge(res) {
+  if (res.node_id) {
+    try { sessionStorage.setItem("chat_pinned_node", res.node_id); } catch (_) {}
+  }
+  const state = res.state || "UNKNOWN";
+  const isLeader = state === "LEADER";
+  const color = isLeader ? "#10b981" : "#38bdf8";
+  const bg = isLeader ? "rgba(16, 185, 129, 0.2)" : "rgba(56, 189, 248, 0.2)";
+
+  const authElem = document.getElementById("auth-node-status");
+  if (authElem) {
+    authElem.innerHTML = `Connected to <b>${res.node_id}</b> &bull; <span style="color:${color};font-weight:bold;">${state}</span> (Term ${res.term}, Commit ${res.commit_index})`;
+  }
+
+  const label = document.getElementById("raft-node-label");
+  const badge = document.getElementById("raft-state-badge");
+  if (label && badge) {
+    label.innerText = `${res.node_id} (T:${res.term} C:${res.commit_index})`;
+    badge.innerText = state;
+    badge.style.color = color;
+    badge.style.backgroundColor = bg;
+    badge.style.border = `1px solid ${color}`;
+  }
+}
+
 async function updateRaftStatus() {
+  if (currentUser && eventController) return;
   try {
     const res = await api.getStatus();
     if (res.success) {
-      const state = res.state || "UNKNOWN";
-      const isLeader = state === "LEADER";
-      const color = isLeader ? "#10b981" : "#38bdf8";
-      const bg = isLeader ? "rgba(16, 185, 129, 0.2)" : "rgba(56, 189, 248, 0.2)";
-
-      const authElem = document.getElementById("auth-node-status");
-      if (authElem) {
-        authElem.innerHTML = `Connected to <b>${res.node_id}</b> &bull; <span style="color:${color};font-weight:bold;">${state}</span> (Term ${res.term}, Commit ${res.commit_index})`;
-      }
-
-      const label = document.getElementById("raft-node-label");
-      const badge = document.getElementById("raft-state-badge");
-      if (label && badge) {
-        label.innerText = `${res.node_id} (T:${res.term} C:${res.commit_index})`;
-        badge.innerText = state;
-        badge.style.color = color;
-        badge.style.backgroundColor = bg;
-        badge.style.border = `1px solid ${color}`;
-      }
+      renderRaftStatusBadge(res);
     }
   } catch (e) {
     // offline or restarting

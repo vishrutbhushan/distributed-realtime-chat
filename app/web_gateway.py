@@ -69,6 +69,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
     grpc_stub: chat_pb2_grpc.ChatServiceStub = None
     stream_stub: chat_pb2_grpc.ChatServiceStub = None
     llm_stub: chat_pb2_grpc.ChatServiceStub = None
+    node_status_fn = None
 
     def setup(self):
         super().setup()
@@ -385,6 +386,11 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             payload["chat_type"] = event.message.chat_type
             payload["target_id"] = event.message.group_id or event.message.recipient_id
             payload["local_only"] = event.message.content == "local_only"
+        if WebGatewayHandler.node_status_fn is not None:
+            try:
+                payload["node_status"] = WebGatewayHandler.node_status_fn()
+            except Exception:
+                pass
         encoded = json.dumps(payload, separators=(",", ":"))
         frame = f"event: {event_type}\ndata: {encoded}\n\n".encode("utf-8")
         self.wfile.write(frame)

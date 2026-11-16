@@ -2,24 +2,17 @@ syntax = "proto3";
 
 package raft;
 
-// ─────────────────────────────────────────────────────────────
-// Log Entry
-// ─────────────────────────────────────────────────────────────
-
 message LogEntry {
   int64  index        = 1;
   int64  term         = 2;
-  string command_type = 3;  // e.g. "SEND_DM", "SEND_GROUP_MSG", "CREATE_GROUP", "UPDATE_GROUP", "SIGNUP"
-  string payload      = 4;  // JSON-encoded command details
+  string command_type = 3;
+  string payload      = 4;
   string request_id   = 5;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Assignment Required Signatures (Page 7)
-// ─────────────────────────────────────────────────────────────
-
 message RequestVoteArgs {
-  string from           = 1; // candidateId
+  string from           = 1;
   string to             = 2;
   int64  term           = 3;
   int64  last_log_index = 4;
@@ -34,7 +27,7 @@ message RequestVoteReply {
 }
 
 message AppendEntriesArgs {
-  string            from         = 1; // leaderId
+  string            from         = 1;
   string            to           = 2;
   int64             term         = 3;
   int64             prev_index   = 4;
@@ -51,11 +44,22 @@ message AppendEntriesReply {
   int64  match_index    = 5;
 }
 
-// ─────────────────────────────────────────────────────────────
-// Raft Service Definition
-// ─────────────────────────────────────────────────────────────
+// Dynamic Cluster Membership Discovery
+message PeerInfo {
+  string node_id   = 1;
+  string raft_addr = 2;
+  string app_addr  = 3;
+}
+
+message PeerReply {
+  bool              success   = 1;
+  string            leader_id = 2;
+  int64             term      = 3;
+  repeated PeerInfo peers     = 4;
+}
 
 service RaftService {
-  rpc RequestVote(RequestVoteArgs)       returns (RequestVoteReply);
-  rpc AppendEntries(AppendEntriesArgs)   returns (AppendEntriesReply);
+  rpc RequestVote(RequestVoteArgs)     returns (RequestVoteReply);
+  rpc AppendEntries(AppendEntriesArgs) returns (AppendEntriesReply);
+  rpc AddPeer(PeerInfo)                returns (PeerReply);
 }

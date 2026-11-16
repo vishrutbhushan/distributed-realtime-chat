@@ -4,14 +4,44 @@
 
 const API_BASE = "";
 
+function withPinnedNode(url) {
+  try {
+    const pinned = sessionStorage.getItem("chat_pinned_node");
+    if (!pinned) return url;
+    const sep = url.includes("?") ? "&" : "?";
+    return `${url}${sep}node=${encodeURIComponent(pinned)}`;
+  } catch (_) {
+    return url;
+  }
+}
+
+async function fetchWithFailover(url, options = {}, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const targetUrl = i === 0 ? withPinnedNode(url) : url;
+      const res = await fetch(targetUrl, options);
+      if (res.status >= 502 && i < retries) {
+        try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) {}
+        await new Promise(r => setTimeout(r, 150));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (err.name === "AbortError" || i === retries) throw err;
+      try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) {}
+      await new Promise(r => setTimeout(r, 150));
+    }
+  }
+}
+
 const api = {
   async getStatus() {
-    const res = await fetch(`${API_BASE}/api/status`);
+    const res = await fetchWithFailover(`${API_BASE}/api/status`);
     return res.json();
   },
 
   async signup(username, password) {
-    const res = await fetch(`${API_BASE}/api/signup`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
@@ -20,7 +50,7 @@ const api = {
   },
 
   async login(username, password) {
-    const res = await fetch(`${API_BASE}/api/login`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
@@ -29,7 +59,7 @@ const api = {
   },
 
   async logout(token) {
-    const res = await fetch(`${API_BASE}/api/logout`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/logout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
@@ -38,21 +68,21 @@ const api = {
   },
 
   async getUsers(token) {
-    const res = await fetch(`${API_BASE}/api/users?token=${encodeURIComponent(token)}`);
+    const res = await fetchWithFailover(`${API_BASE}/api/users?token=${encodeURIComponent(token)}`);
     return res.json();
   },
 
   async getGroups(token) {
-    const res = await fetch(`${API_BASE}/api/groups?token=${encodeURIComponent(token)}`);
+    const res = await fetchWithFailover(`${API_BASE}/api/groups?token=${encodeURIComponent(token)}`);
     return res.json();
   },
 
   eventStreamUrl(token) {
-    return `${API_BASE}/api/events?token=${encodeURIComponent(token)}`;
+    return withPinnedNode(`${API_BASE}/api/events?token=${encodeURIComponent(token)}`);
   },
 
   async getDMs(token, otherUserId, signal) {
-    const res = await fetch(
+    const res = await fetchWithFailover(
       `${API_BASE}/api/messages/dm?token=${encodeURIComponent(token)}&other_user_id=${encodeURIComponent(otherUserId)}`,
       { signal }
     );
@@ -60,7 +90,7 @@ const api = {
   },
 
   async sendDM(token, recipientUserId, content, fileId) {
-    const res = await fetch(`${API_BASE}/api/messages/dm`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/messages/dm`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -75,7 +105,7 @@ const api = {
   },
 
   async getGroupMessages(token, groupId, signal) {
-    const res = await fetch(
+    const res = await fetchWithFailover(
       `${API_BASE}/api/messages/group?token=${encodeURIComponent(token)}&group_id=${encodeURIComponent(groupId)}`,
       { signal }
     );
@@ -83,7 +113,7 @@ const api = {
   },
 
   async sendGroupMessage(token, groupId, content, fileId) {
-    const res = await fetch(`${API_BASE}/api/messages/group`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/messages/group`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -98,7 +128,7 @@ const api = {
   },
 
   async createGroup(token, name, initialMemberUserIds) {
-    const res = await fetch(`${API_BASE}/api/groups`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/groups`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -111,7 +141,7 @@ const api = {
   },
 
   async updateGroup(token, groupId, action, targetUserId, newName) {
-    const res = await fetch(`${API_BASE}/api/groups/update`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/groups/update`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -126,7 +156,7 @@ const api = {
   },
 
   async getGroupMembers(token, groupId) {
-    const res = await fetch(
+    const res = await fetchWithFailover(
       `${API_BASE}/api/groups/members?token=${encodeURIComponent(token)}&group_id=${encodeURIComponent(groupId)}`
     );
     return res.json();
@@ -139,7 +169,7 @@ const api = {
     formData.append("target_id", targetId);
     formData.append("file", file);
 
-    const res = await fetch(`${API_BASE}/api/files/upload?token=${encodeURIComponent(token)}`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/files/upload?token=${encodeURIComponent(token)}`, {
       method: "POST",
       body: formData,
     });
@@ -147,7 +177,7 @@ const api = {
   },
 
   async smartReplies(token, chatType, targetId, chatHistory, currentMessage, contextTitle) {
-    const res = await fetch(`${API_BASE}/api/llm/smart-reply`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/llm/smart-reply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -164,7 +194,7 @@ const api = {
   },
 
   async summarize(token, chatType, targetId, chatHistory, contextTitle, currentUser) {
-    const res = await fetch(`${API_BASE}/api/llm/summarize`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/llm/summarize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -181,7 +211,7 @@ const api = {
   },
 
   async suggest(token, chatType, targetId, chatHistory, contextTitle) {
-    const res = await fetch(`${API_BASE}/api/llm/suggest`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/llm/suggest`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -197,7 +227,7 @@ const api = {
   },
 
   async markRead(token, chatType, targetId) {
-    const res = await fetch(`${API_BASE}/api/chat/read`, {
+    const res = await fetchWithFailover(`${API_BASE}/api/chat/read`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

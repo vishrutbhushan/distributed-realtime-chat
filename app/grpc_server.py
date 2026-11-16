@@ -43,7 +43,7 @@ from storage.database import Database
 logger = logging.getLogger(__name__)
 
 STREAM_AUTH_CHECK_INTERVAL_SECONDS = 5.0
-STREAM_HEARTBEAT_INTERVAL_SECONDS = 15.0
+STREAM_HEARTBEAT_INTERVAL_SECONDS = 2.0
 
 
 def create_llm_stub(llm_server_addr: str):
@@ -64,6 +64,7 @@ def create_llm_stub(llm_server_addr: str):
 
 
 class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
+    node_id: str = "node-1"
     raft: Optional[RaftNode] = None
     app_peers: Dict[str, str] = {}
 
@@ -126,7 +127,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         with self._stub_lock:
             if peer_id in self._peer_app_stubs:
                 return self._peer_app_stubs[peer_id]
-            addr = self.app_peers.get(peer_id)
+            addr = self.app_peers.get(peer_id) or (self.raft.app_peers.get(peer_id) if self.raft else None)
             if not addr:
                 return None
             ch = grpc.insecure_channel(

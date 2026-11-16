@@ -22,9 +22,11 @@ import urllib.request
 import uuid
 
 NODES = {
-    "node-1": "http://localhost:8000",
-    "node-2": "http://localhost:8001",
-    "node-3": "http://localhost:8002",
+    "node-1": "http://localhost:8001",
+    "node-2": "http://localhost:8002",
+    "node-3": "http://localhost:8003",
+    "node-4": "http://localhost:8004",
+    "node-5": "http://localhost:8005",
 }
 
 GREEN = "\033[92m"
