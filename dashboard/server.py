@@ -69,6 +69,7 @@ class Monitor:
         self.demo = None
         self.accounts = None
         self.last_lifecycle = {}
+        self.recovery = None
 
     def containers(self):
         query = urlencode({
@@ -86,8 +87,44 @@ class Monitor:
         self.sequence += 1
         observed = {"id": self.sequence, **event}
         self.events.append(observed)
-        if event["kind"] in ("election_started", "vote_cast", "vote_reply", "leader_elected"):
+        if event["kind"] in ("election_started", "vote_cast", "vote_reply", "leader_elected") or (
+            event["kind"] == "control_stop" and event.get("leader_term") is not None
+        ):
             self.election_events.append(observed)
+        if event["kind"] in ("control_add", "control_start"):
+            self.recovery = {
+                "node": event["node"], "started_at": event["time"], "kind": event["kind"],
+                "target_index": event["target_index"],
+            }
+
+    def _observe_recovery(self, nodes, now):
+        recovery = self.recovery
+        if not recovery or "finished_at" in recovery or recovery.get("interrupted"):
+            return
+        node = next((item for item in nodes if item["node_id"] == recovery["node"]), None)
+        if not node or not node["online"]:
+            if "online_at" in recovery and (not node or node["docker_state"] == "exited"):
+                recovery["interrupted"] = True
+            return
+        recovery.setdefault("online_at", now)
+        leaders = [item for item in nodes if item["online"] and item["state"] == "LEADER"]
+        if len(leaders) != 1 or node["leader_id"] != leaders[0]["node_id"]:
+            return
+        leader = leaders[0]
+        recovery.setdefault("joined_at", now)
+        recovery["leader"] = leader["node_id"]
+        if recovery["target_index"] is None:
+            recovery["target_index"] = leader["commit_index"]
+        recovery["last_applied"] = node["last_applied"]
+        if node["last_applied"] >= recovery["target_index"]:
+            copied = {
+                event["index"] for event in self.events
+                if event["kind"] == "log_appended" and event["node"] == node["node_id"]
+                and event.get("leader") and event["time"] >= recovery["started_at"]
+                and event["index"] <= recovery["target_index"]
+            }
+            recovery["received_entries"] = len(copied)
+            recovery["finished_at"] = now
 
     def record(self, kind, **fields):
         with self.lock:
@@ -124,12 +161,21 @@ class Monitor:
                     jobs = {node: pool.submit(self._read_node, node, row) for node, row in containers.items()}
                     samples = {node: job.result() for node, job in jobs.items()}
                     with self.lock:
+                        now = time.time()
                         new_events = []
                         self.nodes = []
                         for node in sorted(samples, key=lambda x: int(x.split("-")[1])):
                             item, events, cursor = samples[node]
                             self.nodes.append(item)
                             if cursor is not None:
+                                previous_cursor = self.cursors.get(node)
+                                if (previous_cursor and previous_cursor[0] != cursor[0] and
+                                        not (self.recovery and self.recovery["node"] == node
+                                             and "online_at" not in self.recovery)):
+                                    self.recovery = {
+                                        "node": node, "started_at": now, "kind": "restart_detected",
+                                        "target_index": None,
+                                    }
                                 self.cursors[node] = cursor
                             previous = self.last_lifecycle.get(node)
                             lifecycle = item["docker_state"], item["online"]
@@ -146,6 +192,7 @@ class Monitor:
                             self.cursors.pop(node, None)
                         for event in sorted(new_events, key=lambda e: e["time"]):
                             self._event(event)
+                        self._observe_recovery(self.nodes, now)
                         self.error = None
                 except (OSError, RuntimeError, ValueError, KeyError) as exc:
                     with self.lock:
@@ -159,6 +206,7 @@ class Monitor:
                 "project": self.project, "nodes": self.nodes, "events": events,
                 "cursor": self.sequence, "error": self.error, "demo": self.demo,
                 "elections": list(self.election_events),
+                "recovery": self.recovery.copy() if self.recovery else None,
                 "busy": self.action_lock.locked(),
             }
 
@@ -200,8 +248,9 @@ class Monitor:
                 and containers.get(item["node_id"], {}).get("State") == "running"
             ]
         node = followers[0] if followers else leader
-        request_id = uuid4().hex
-        message = f"Raft demo {request_id[:7]}"
+        marker = uuid4().hex
+        request_id = f"dashboard-{marker}"
+        message = f"Dashboard test message {marker[:7]}"
         with self.lock:
             self.demo = {"request_id": request_id, "text": message, "node": node, "outcome": "pending"}
         self.record("demo_submitted", node=node, request_id=request_id)
@@ -221,7 +270,7 @@ class Monitor:
         with self.lock:
             self.demo = {**self.demo, "message_id": confirmed["message_id"], "outcome": "confirmed"}
         self.record("demo_confirmed", node=node, request_id=request_id)
-        return f"Chat confirmed {message}."
+        return "Dashboard test message confirmed."
 
     def _add(self, containers):
         if not containers:
@@ -275,9 +324,13 @@ class Monitor:
             if container["State"] != expected and not (action == "start" and container["State"] == "created"):
                 raise RuntimeError(f"{node} is {container['State']}.")
             if action == "stop":
+                with self.lock:
+                    leader_term = next((item["term"] for item in self.nodes if
+                                        item["node_id"] == node and item.get("state") == "LEADER"), None)
+                stopped_at = time.time()
                 # A zero second timeout force-stops it and suppresses Docker's auto-restart.
                 engine("POST", f"/containers/{container['Id']}/stop?t=0")
-                self.record("control_stop", node=node)
+                self.record("control_stop", node=node, time=stopped_at, leader_term=leader_term)
             else:
                 target = self._recovery_target()
                 started_at = time.time()

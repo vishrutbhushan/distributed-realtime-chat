@@ -9,6 +9,9 @@ const clock = new Intl.DateTimeFormat(undefined, {
 const electionTime = new Intl.DateTimeFormat(undefined, {
   month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
 });
+const shortTime = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+});
 
 let current = { nodes: [], events: [] };
 let cursor = 0;
@@ -185,27 +188,53 @@ function renderActivity(nodes, leader) {
   }
 }
 
-function messageTrace() {
-  const demo = current.demo;
+function observedMessages(events) {
   const messages = new Map();
-  for (const event of [...history].sort(byTime)) {
-    if (event.kind === "log_appended" && event.request_id && ["SEND_DM", "SEND_GROUP_MSG"].includes(event.command)) {
-      messages.set(event.request_id, event);
+  for (const event of [...events].sort(byTime)) {
+    if (!event.request_id) continue;
+    const appended = event.kind === "log_appended" && ["SEND_DM", "SEND_GROUP_MSG"].includes(event.command);
+    if (!appended && event.kind !== "demo_submitted") continue;
+    if (!messages.has(event.request_id)) messages.set(event.request_id, {});
+    const message = messages.get(event.request_id);
+    if (appended) {
+      if (!message.entry || (message.entry.leader && !event.leader)) message.entry = event;
+    } else {
+      message.submission = event;
     }
   }
-  if (demo && !messages.has(demo.request_id)) messages.set(demo.request_id, null);
-  const options = [...messages.entries()].slice(-12).reverse();
+  for (const [id, message] of messages) {
+    message.time = (message.submission || message.entry).time;
+    message.label = message.submission || id.startsWith("dashboard-") ? "Dashboard test message"
+      : message.entry.command === "SEND_DM" ? "Direct message" : "Group message";
+  }
+  return messages;
+}
+
+function messageTrace() {
+  const demo = current.demo;
+  const messages = observedMessages(history);
+  if (demo && !messages.has(demo.request_id)) {
+    messages.set(demo.request_id, { label: "Dashboard test message", time: null });
+  }
+  const options = [...messages.entries()].sort((a, b) => (b[1].time ?? Infinity) - (a[1].time ?? Infinity)).slice(0, 12);
   if (frozenTrace && pickedRequest && !options.some(([id]) => id === pickedRequest)) {
-    options.push([pickedRequest, frozenTrace.find(e => e.request_id === pickedRequest && e.kind === "log_appended")]);
+    const saved = observedMessages(frozenTrace).get(pickedRequest);
+    if (saved) options.push([pickedRequest, saved]);
   }
   const picker = get("trace-picker");
-  const markup = options.map(([id, event]) =>
-    `<option value="${display(id)}">${demo?.request_id === id ? display(demo.text) : `Log #${event?.index ?? "—"} · ${display(id.slice(0, 7))}`}</option>`).join("");
+  const optionLabel = message => message.time == null ? message.label
+    : `${message.label} · ${shortTime.format(message.time * 1000)}`;
+  const labels = options.map(([, message]) => optionLabel(message));
+  const markup = options.map(([id, message], index) => {
+    const label = labels.filter(value => value === labels[index]).length > 1
+      ? `${message.label} · ${clock.format(message.time * 1000)}` : labels[index];
+    return `<option value="${display(id)}">${display(label)}</option>`;
+  }).join("");
   if (picker.dataset.markup !== markup) {
     picker.innerHTML = markup;
     picker.dataset.markup = markup;
   }
-  picker.hidden = !options.length;
+  get("trace-choice").hidden = !options.length;
   if (!frozenTrace && demo?.request_id && demo.request_id !== lastDemoRequest) {
     pickedRequest = demo.request_id;
     lastDemoRequest = demo.request_id;
@@ -213,7 +242,8 @@ function messageTrace() {
   if (!options.some(([id]) => id === pickedRequest)) pickedRequest = options[0]?.[0] || "";
   picker.value = pickedRequest;
   if (!pickedRequest) {
-    get("trace-label").textContent = "Send a message to follow its log entry.";
+    get("trace-label").textContent = "Send a chat message to trace it.";
+    get("trace-entry").hidden = true;
     sequence = [];
     renderMessageSteps();
     renderSequence();
@@ -223,10 +253,14 @@ function messageTrace() {
   const sameRequest = source.filter(e => e.request_id === pickedRequest).sort(byTime);
   const entries = sameRequest.filter(e => e.kind === "log_appended");
   const entry = entries.find(e => !e.leader) || entries[0];
-  const position = entry ? ` · log #${entry.index}, term ${entry.term}` : "";
-  get("trace-label").textContent = pickedRequest === demo?.request_id && !frozenTrace
-    ? `${demo.text} · via ${demo.node} · ${demo.outcome}${position}`
-    : `Observed chat write ${pickedRequest.slice(0, 7)}${position}`;
+  const submitted = sameRequest.find(e => e.kind === "demo_submitted");
+  const outcome = sameRequest.findLast(e => ["demo_confirmed", "demo_unconfirmed"].includes(e.kind));
+  const message = options.find(([id]) => id === pickedRequest)[1];
+  const status = outcome?.kind === "demo_confirmed" ? "API confirmed"
+    : outcome?.kind === "demo_unconfirmed" ? "API unconfirmed" : submitted && "Awaiting API confirmation";
+  get("trace-label").textContent = [optionLabel(message), submitted && `via ${submitted.node}`, status].filter(Boolean).join(" · ");
+  get("trace-entry").hidden = !entry;
+  get("trace-entry").textContent = entry ? `Raft log entry #${entry.index} · term ${entry.term}` : "";
   const related = new Set(sameRequest.map(e => e.id));
   if (entry) {
     const acknowledged = new Set();
@@ -279,10 +313,24 @@ function renderMessageSteps() {
       : accepted ? "API confirmed · quorum details unavailable" : "Awaiting a write quorum", !!quorum],
     ["Applied", applied.length ? `Visible on ${applied.join(", ")}` : "Awaiting apply", applied.length > 0],
   ];
-  const markup = steps.map(([label, text, observed], index) =>
-    `<li class="${observed ? (index >= 2 ? "committed" : "observed") : ""}"><h3><span>${index + 1}.</span>${label}</h3>
-      <p>${display(text)}</p></li>`).join("");
-  const container = get("message-steps");
+  renderSteps("message-steps", steps);
+}
+
+function renderSteps(id, steps) {
+  const began = steps[0][3];
+  const markup = steps.map(([label, text, observed, at], index) => {
+    let mark = "";
+    if (at != null) {
+      const milliseconds = Math.round((at - began) * 1000);
+      const timeLabel = index && began != null && milliseconds >= 0
+        ? (milliseconds < 1000 ? `+${milliseconds} ms` : `+${(milliseconds / 1000).toFixed(1)} s`)
+        : shortTime.format(at * 1000);
+      mark = `<time datetime="${new Date(at * 1000).toISOString()}">${timeLabel}</time>`;
+    }
+    return `<li class="${observed ? (index >= 2 ? "committed" : "observed") : ""}"><h3><span>${index + 1}.</span>${label}</h3>
+      <p>${display(text)}</p>${mark}</li>`;
+  }).join("");
+  const container = get(id);
   if (container.dataset.markup !== markup) {
     container.innerHTML = markup;
     container.dataset.markup = markup;
@@ -367,7 +415,7 @@ function renderSequence() {
   }
 }
 
-function election(voters, term, leader) {
+function election(voters, quorum, term, leader) {
   const rounds = new Map();
   const events = [...(current.elections || [])].sort(byTime);
   for (const event of events) {
@@ -378,22 +426,43 @@ function election(voters, term, leader) {
     else round.winner = event;
   }
   const terms = [...rounds.keys()].sort((a, b) => b - a).slice(0, 5);
-  const latest = rounds.get(terms[0]);
-  const candidate = latest?.winner || latest?.candidates.at(-1);
-  get("election-label").textContent = latest?.winner
-    ? `Latest observed · term ${candidate.term} · ${candidate.node}`
-    : candidate ? `Latest observed · term ${candidate.term} · ${candidate.node} campaigning`
-      : leader ? `Term ${term} · ${leader.node_id} leads · votes unavailable`
-        : "Awaiting election telemetry.";
-  const votes = candidate ? voters.map(id => {
+  const stop = events.findLast(e => e.kind === "control_stop");
+  const waiting = stop && (!(terms.length) || stop.leader_term >= terms[0]);
+  const latest = waiting ? null : rounds.get(terms[0]);
+  const winner = latest?.winner;
+  const candidate = winner || latest?.candidates.at(-1);
+  const campaign = latest?.candidates.find(e => e.node === candidate.node);
+  const preVote = candidate && history.findLast(e => e.kind === "pre_vote_started" &&
+    e.node === candidate.node && e.term === candidate.term && e.time <= (campaign || candidate).time);
+  const relatedStop = stop && (waiting || (candidate && stop.leader_term === candidate.term - 1 && stop.time <= candidate.time));
+  get("election-label").textContent = winner ? `Term ${winner.term} · ${winner.node} elected`
+    : candidate ? `Term ${candidate.term} · Voting`
+      : waiting ? `${stop.node} stopped · awaiting an election`
+        : leader ? `Term ${term} · ${leader.node_id} leads · election details unavailable` : "Awaiting election telemetry.";
+  const votesByNode = new Map(candidate ? voters.map(id => {
     const vote = events.findLast(e => e.term === candidate.term &&
       ((e.kind === "vote_cast" && e.node === id && e.peer === candidate.node) ||
        (e.kind === "vote_reply" && e.node === candidate.node && e.peer === id)));
     const self = id === candidate.node;
-    const yes = self || latest.winner?.voters.includes(id) || vote?.granted;
+    const yes = self || winner?.voters.includes(id) || vote?.granted;
     const state = self ? "self vote" : yes ? "yes" : vote ? "no" : "unobserved";
-    return `<li class="vote ${yes ? "yes" : vote ? "no" : ""}"><strong>${display(id)}</strong><span>${state}</span></li>`;
-  }).join("") : "";
+    return [id, {yes, state}];
+  }) : []);
+  const yesVotes = winner?.voters || [...votesByNode].filter(([, vote]) => vote.yes).map(([id]) => id);
+  const goal = campaign?.quorum ?? quorum;
+  const lastYes = candidate && events.findLast(e => e.kind === "vote_reply" && e.term === candidate.term &&
+    e.node === candidate.node && e.granted && (!winner || e.time <= winner.time));
+  renderSteps("election-steps", [
+    relatedStop ? ["Leader stopped", stop.node, true, stop.time]
+      : ["Pre-vote", preVote ? `${preVote.node} checked for a majority` : "No pre-vote observed", !!preVote, preVote?.time],
+    ["Campaign", candidate ? `${candidate.node} ran in term ${candidate.term} and voted for itself` : "Awaiting a candidate", !!candidate, campaign?.time],
+    ["Votes", yesVotes.length ? `${yesVotes.length}${goal ? ` of ${goal} needed` : ""} · ${yesVotes.join(", ")}`
+      : "Awaiting votes", yesVotes.length > 0, lastYes?.time],
+    ["Leader elected", winner ? winner.node : "Awaiting a winner", !!winner, winner?.time],
+  ]);
+  get("election-steps").hidden = !(relatedStop || candidate);
+  const votes = [...votesByNode].map(([id, {yes, state}]) =>
+    `<li class="vote ${yes ? "yes" : state === "no" ? "no" : ""}"><strong>${display(id)}</strong><span>${state}</span></li>`).join("");
   const rows = terms.map(number => {
     const { candidates, winner } = rounds.get(number);
     const event = winner || candidates.at(-1);
@@ -410,6 +479,32 @@ function election(voters, term, leader) {
       list.dataset.markup = markup;
     }
   }
+}
+
+function renderRecovery() {
+  const run = current.recovery;
+  get("recovery-steps").hidden = !run;
+  if (!run) {
+    get("recovery-label").textContent = "Restart or add a replica to see it catch up.";
+    return;
+  }
+  const complete = run.finished_at != null;
+  const target = run.target_index;
+  const received = run.received_entries;
+  const status = run.interrupted ? "Recovery interrupted"
+    : complete ? "Caught up to the recovery target"
+      : run.joined_at ? "Catching up" : run.online_at ? "Waiting for the leader" : "Waiting for telemetry";
+  get("recovery-label").textContent = `${run.node} · ${status}`;
+  renderSteps("recovery-steps", [
+    [run.kind === "control_add" ? "Replica added" : "Restarted", run.node, true, run.started_at],
+    ["Online", run.online_at ? "Telemetry responding" : "Awaiting telemetry", !!run.online_at, run.online_at],
+    ["Rejoined Raft", run.leader ? (run.leader === run.node ? "Elected leader" : `Following ${run.leader}`)
+      : "Awaiting leader", !!run.joined_at, run.joined_at],
+    ["Caught up", target == null ? "Awaiting a sync target"
+      : complete ? `Applied through #${target}${received ? ` · received ${received} ${received === 1 ? "entry" : "entries"}` : ""}`
+        : `Applied #${run.last_applied ?? "—"} · target #${target}`,
+      complete, run.finished_at],
+  ]);
 }
 
 function render() {
@@ -462,7 +557,8 @@ function render() {
   renderMap(withRoles, leader);
   if (get("activity-details").open) renderActivity(withRoles, leader);
   const related = messageTrace();
-  election(membership, term, leader);
+  election(membership, quorum, term, leader);
+  renderRecovery();
   const shown = history.filter(e => filter === "all" ||
     (filter === "election" && (electionKinds.has(e.kind) || lifecycleKinds.has(e.kind))) ||
     (filter === "message" && related.has(e.id)))

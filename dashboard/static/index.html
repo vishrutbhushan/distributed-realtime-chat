@@ -39,13 +39,28 @@
             </ul>
           </details>
         </section>
+        <section class="section" aria-labelledby="election-heading">
+          <div class="section-head"><div><h2 id="election-heading">Leader election</h2><p id="election-label">Waiting for election events.</p></div></div>
+          <ol id="election-steps" class="message-steps" aria-label="Leader election sequence"></ol>
+          <details class="disclosure">
+            <summary>Vote details and recent terms</summary>
+            <ul id="votes" class="votes" aria-label="Votes for the latest candidate"></ul>
+            <h3 class="terms-heading" id="terms-heading">Recent terms</h3>
+            <ul id="recent-terms" class="votes" aria-labelledby="terms-heading"></ul>
+          </details>
+        </section>
+        <section class="section" aria-labelledby="recovery-heading">
+          <div class="section-head"><div><h2 id="recovery-heading">Replica recovery</h2><p id="recovery-label">Restart or add a replica to see it catch up.</p></div></div>
+          <ol id="recovery-steps" class="message-steps" aria-label="Replica recovery sequence" hidden></ol>
+        </section>
         <section class="section" aria-labelledby="trace-heading">
           <div class="section-head"><div><h2 id="trace-heading">What happened to the message?</h2><p id="trace-label">Send or select a chat message to trace it.</p></div>
-            <select id="trace-picker" aria-label="Choose an observed chat message" hidden></select>
+            <label class="trace-choice" id="trace-choice" hidden>Message <select id="trace-picker"></select></label>
           </div>
           <ol id="message-steps" class="message-steps" aria-label="Message replication steps"></ol>
           <details class="disclosure">
             <summary>Technical sequence and replay</summary>
+            <p id="trace-entry" class="trace-entry" hidden></p>
             <div class="transport" aria-label="Message playback">
               <button type="button" id="trace-live" aria-pressed="true">Live</button>
               <button type="button" id="trace-pause" aria-pressed="false">Pause display</button>
@@ -79,13 +94,6 @@
           <select id="target" aria-label="Choose a replica"></select>
           <div class="button-row"><button id="stop" data-action="stop">Stop</button><button id="start" data-action="start">Restart</button></div>
           <p class="notice" id="notice" role="status"></p>
-        </section>
-        <section class="section" aria-labelledby="election-heading">
-          <h2 id="election-heading">Elections</h2>
-          <p id="election-label">Waiting for election events.</p>
-          <ul id="votes" class="votes"></ul>
-          <h3 class="terms-heading" id="terms-heading">Recent terms</h3>
-          <ul id="recent-terms" class="votes" aria-labelledby="terms-heading"></ul>
         </section>
       </aside>
     </div>
