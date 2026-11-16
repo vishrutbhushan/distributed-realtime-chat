@@ -1,191 +1,185 @@
 #!/usr/bin/env python3
-"""
-Raft Consensus & Fault Tolerance Verification Script.
-
-Tests the live 3-node cluster:
-1. Status Check: Queries /api/status on all 3 nodes, verifying 1 Leader and 2 Followers.
-2. Data Replication: Performs a write via the Leader and verifies it is replicated to all Followers.
-3. Transparent Forwarding: Performs a write via a Follower and verifies it is forwarded and committed.
-4. (Optional) Leader Failover & Recovery: Tests killing the Leader and verifies election of a new Leader.
-
-Usage:
-  python scripts/verify_raft.py
-  python scripts/verify_raft.py --failover-test
-"""
+"""Verify live Raft replication and cookie affinity through the Compose load balancer."""
 
 import argparse
+from contextlib import ExitStack
+from http.cookiejar import CookieJar
 import json
 import subprocess
 import time
-import urllib.error
-import urllib.request
-import uuid
-
-NODES = {
-    "node-1": "http://localhost:8001",
-    "node-2": "http://localhost:8002",
-    "node-3": "http://localhost:8003",
-    "node-4": "http://localhost:8004",
-    "node-5": "http://localhost:8005",
-}
-
-GREEN = "\033[92m"
-RED = "\033[91m"
-YELLOW = "\033[93m"
-CYAN = "\033[96m"
-BOLD = "\033[1m"
-RESET = "\033[0m"
+from urllib.parse import urlencode
+from urllib.request import build_opener, HTTPCookieProcessor, Request
+from uuid import uuid4
 
 
-def http_get(url: str, timeout: float = 3.0):
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "RaftVerifier/1.0"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        return {"error": str(e)}
+class Client:
+    def __init__(self, base):
+        self.base = base
+        self.opener = build_opener(HTTPCookieProcessor(CookieJar()))
+
+    def open(self, path, query=None, data=None, timeout=9):
+        url = self.base + path + ("?" + urlencode(query) if query else "")
+        req = Request(url, data=json.dumps(data).encode() if data is not None else None,
+                      headers={"Content-Type": "application/json"})
+        return self.opener.open(req, timeout=timeout)
+
+    def json(self, path, query=None, data=None):
+        with self.open(path, query, data) as response:
+            result = json.load(response)
+        require(result.get("success"), f"{path} failed: {result.get('error') or result.get('message')}")
+        return result
+
+    def node(self):
+        return self.json("/api/status")["node_id"]
 
 
-def http_post(url: str, data: dict, timeout: float = 4.0):
-    try:
-        body = json.dumps(data).encode()
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json", "User-Agent": "RaftVerifier/1.0"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
-    except Exception as e:
-        return {"error": str(e)}
+def require(condition, error):
+    if not condition:
+        raise RuntimeError(error)
 
 
-def get_cluster_status():
-    status = {}
-    for node_name, url in NODES.items():
-        res = http_get(f"{url}/api/status")
-        status[node_name] = res
-    return status
+def wait_for(check, description, seconds=20):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        value = check()
+        if value:
+            return value
+        time.sleep(0.2)
+    raise RuntimeError(f"Timed out waiting for {description}.")
 
 
-def print_status_table(status: dict):
-    print(f"\n{BOLD}{'Node':<10} {'State':<12} {'Term':<8} {'Leader ID':<12} {'Commit Index':<14} {'Web URL':<22}{RESET}")
-    print("-" * 78)
-    for node_name, res in status.items():
-        if "error" in res:
-            print(f"{node_name:<10} {RED}{'OFFLINE':<12}{RESET} {'-':<8} {'-':<12} {'-':<14} {NODES[node_name]:<22}")
-        else:
-            state = res.get("state", "UNKNOWN")
-            color = GREEN if state == "LEADER" else CYAN
-            print(
-                f"{node_name:<10} {color}{state:<12}{RESET} {res.get('term', 0):<8} "
-                f"{res.get('leader_id', '-'):<12} {res.get('commit_index', 0):<14} {NODES[node_name]:<22}"
-            )
-    print()
+def containers():
+    rows = subprocess.check_output(
+        ["docker", "compose", "ps", "--format", "json", "app-node"], text=True
+    )
+    return {f"node-{name.rsplit('-', 1)[-1]}": name for line in rows.splitlines()
+            if (name := json.loads(line)["Name"])}
 
 
-def run_checks(failover: bool = False):
-    print(f"\n{BOLD}{CYAN}=== 1. Checking Cluster Connectivity & Raft Status ==={RESET}")
-    status = get_cluster_status()
-    print_status_table(status)
+def node_status(container):
+    # Diagnostic access stays on the Docker network. The HTTP client has no node selector.
+    command = (
+        "from urllib.request import urlopen; "
+        "print(urlopen('http://127.0.0.1:8000/api/status', timeout=1).read().decode())"
+    )
+    result = subprocess.run(["docker", "exec", container, "python", "-c", command],
+                            capture_output=True, text=True, timeout=4)
+    return json.loads(result.stdout) if result.returncode == 0 else {}
 
-    leaders = [n for n, s in status.items() if s.get("state") == "LEADER"]
-    followers = [n for n, s in status.items() if s.get("state") == "FOLLOWER"]
 
-    if len(leaders) != 1:
-        print(f"{RED}[FAIL] Expected exactly 1 Leader, found {len(leaders)}: {leaders}{RESET}")
-        print("Ensure the cluster is running via: python3 scripts/run_local_cluster.py or bash scripts/start.sh")
-        return False
+def pick_leader(nodes):
+    leaders = [node for node, container in nodes.items() if node_status(container).get("state") == "LEADER"]
+    return leaders[0] if len(leaders) == 1 else None
 
-    leader_name = leaders[0]
-    leader_url = NODES[leader_name]
-    print(f"{GREEN}[PASS] Discovered Leader: {BOLD}{leader_name}{RESET}{GREEN} (Term: {status[leader_name].get('term')}){RESET}")
-    print(f"{GREEN}[PASS] Discovered Followers: {followers}{RESET}")
 
-    # ── 2. Data Replication Test via Leader ──
-    print(f"\n{BOLD}{CYAN}=== 2. Testing Log Replication via Leader ({leader_name}) ==={RESET}")
-    test_user = f"raft_user_{uuid.uuid4().hex[:6]}"
-    signup_data = {"username": test_user, "password": "password123"}
-    print(f"Registering '{test_user}' on Leader ({leader_url})...")
-    signup_resp = http_post(f"{leader_url}/api/auth/signup", signup_data)
+def client_for(base, wanted):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        try:
+            client = Client(base)
+            node = client.node()
+            if node in wanted and all(client.node() == node for _ in range(3)):
+                return client, node
+        except OSError:
+            pass
+        time.sleep(0.05)
+    raise RuntimeError(f"Could not find an affinity cookie for {', '.join(wanted)}.")
 
-    if not signup_resp.get("success"):
-        print(f"{RED}[FAIL] Signup failed on Leader: {signup_resp}{RESET}")
-        return False
-    print(f"{GREEN}[PASS] Leader committed signup to Raft quorum!{RESET}")
 
-    # Verify user exists across all followers
-    time.sleep(0.3)
-    login_data = {"username": test_user, "password": "password123"}
-    for node_name, url in NODES.items():
-        login_resp = http_post(f"{url}/api/auth/login", login_data)
-        if login_resp.get("success"):
-            print(f"{GREEN}[PASS] Verified user '{test_user}' exists on {node_name} database!{RESET}")
-        else:
-            print(f"{RED}[FAIL] User '{test_user}' missing on {node_name}: {login_resp}{RESET}")
-            return False
+def expect_event(response, wanted, message_id=None):
+    event = ""
+    for _ in range(150):
+        line = response.readline()
+        if not line:
+            break
+        text = line.decode().rstrip("\r\n")
+        if text.startswith("event: "):
+            event = text[7:]
+        if event == wanted and text.startswith("data: "):
+            payload = json.loads(text[6:])
+            if message_id is None or payload.get("message", {}).get("message_id") == message_id:
+                return
+    raise RuntimeError(f"SSE did not deliver {wanted}.")
 
-    # ── 3. Transparent Follower Forwarding Test ──
-    follower_name = followers[0]
-    follower_url = NODES[follower_name]
-    print(f"\n{BOLD}{CYAN}=== 3. Testing Follower Forwarding ({follower_name} -> {leader_name}) ==={RESET}")
-    test_user_fwd = f"fwd_user_{uuid.uuid4().hex[:6]}"
-    print(f"Posting signup to Follower ({follower_url})...")
-    fwd_resp = http_post(f"{follower_url}/api/auth/signup", {"username": test_user_fwd, "password": "password123"})
-    if fwd_resp.get("success"):
-        print(f"{GREEN}[PASS] Follower transparently forwarded request to Leader and replicated!{RESET}")
-    else:
-        print(f"{RED}[FAIL] Follower forwarding failed: {fwd_resp}{RESET}")
-        return False
 
-    # Verify directory listing (/api/users) on all 3 nodes returns the registered users
-    tok = fwd_resp.get("token", "")
-    for node_name, url in NODES.items():
-        users_resp = http_get(f"{url}/api/users?token={tok}")
-        if users_resp.get("success") and any(u.get("username") == test_user for u in users_resp.get("users", [])):
-            print(f"{GREEN}[PASS] Directory /api/users on {node_name} lists '{test_user}' with metadata!{RESET}")
-        else:
-            print(f"{RED}[FAIL] Directory /api/users on {node_name} failed: {users_resp}{RESET}")
-            return False
+def send(client, sender, recipient, text, group=False):
+    target = "group_id" if group else "recipient_user_id"
+    return client.json(f"/api/messages/{'group' if group else 'dm'}", data={
+        "token": sender["token"], target: recipient, "content": text, "client_request_id": uuid4().hex,
+    })["message"]["message_id"]
 
-    # ── 4. (Optional) Failover & Election Test ──
+
+def verify(base, failover):
+    nodes = containers()
+    require(len(nodes) >= 3, "Start the Compose app-node service first.")
+    leader = wait_for(lambda: pick_leader(nodes), "a single leader")
+    leader_client, _ = client_for(base, {leader})
+    follower, follower_id = client_for(base, nodes.keys() - {leader})
+    print(f"PASS session cookies stick to distinct replicas ({leader}, {follower_id}).")
+
+    suffix = uuid4().hex[:7]
+    alice = follower.json("/api/signup", data={"username": f"check_a_{suffix}", "password": uuid4().hex})
+    bob_password = uuid4().hex
+    bob_name = f"check_b_{suffix}"
+    bob = follower.json("/api/signup", data={"username": bob_name, "password": bob_password})
+    bob = follower.json("/api/login", data={"username": bob_name, "password": bob_password})
+    group = follower.json("/api/groups", data={
+        "token": alice["token"], "name": "Verification", "initial_member_user_ids": [bob["user_id"]],
+    })["group"]
+    query = {"token": alice["token"]}
+    require(any(g["group_id"] == group["group_id"] for g in follower.json("/api/groups", query)["groups"]),
+            "The serving follower could not immediately read the new group.")
+    renamed = "Renamed " + suffix
+    follower.json("/api/groups/update", data={
+        **query, "group_id": group["group_id"], "action": "RENAME", "new_name": renamed,
+    })
+    require(any(g["name"] == renamed for g in follower.json("/api/groups", query)["groups"]),
+            "The serving follower could not immediately read the group rename.")
+
+    with ExitStack() as stack:
+        feeds = []
+        for _ in range(4):
+            feed = stack.enter_context(follower.open("/api/events", {"token": bob["token"]}))
+            expect_event(feed, "READY")
+            feeds.append(feed)
+        require(follower.node() == follower_id, "Open SSE connections changed the session's affinity.")
+        dm = send(follower, alice, bob["user_id"], "Direct verification " + suffix)
+        history = follower.json("/api/messages/dm", {**query, "other_user_id": bob["user_id"]})["messages"]
+        require(any(m["message_id"] == dm for m in history), "The serving follower could not immediately read the DM.")
+        for feed in feeds:
+            expect_event(feed, "NEW_MESSAGE", dm)
+        group_id = group["group_id"]
+        message = send(follower, alice, group_id, "Group verification " + suffix, group=True)
+        history = follower.json("/api/messages/group", {**query, "group_id": group_id})["messages"]
+        require(any(m["message_id"] == message for m in history), "The serving follower could not immediately read the group message.")
+    print("PASS immediate follower reads after signup, login, group changes, and both message types.")
+    print("PASS four simultaneous SSE connections on one affinity cookie received the real DM.")
+
     if failover:
-        print(f"\n{BOLD}{CYAN}=== 4. Testing Leader Crash & Failover ==={RESET}")
-        print(f"Stopping Leader container ({leader_name})...")
-        subprocess.run(["docker", "compose", "stop", f"app-{leader_name}"], check=False)
-        print("Waiting 1.5 seconds for election timeout and new leader election...")
-        time.sleep(1.5)
-
-        new_status = get_cluster_status()
-        print_status_table(new_status)
-
-        new_leaders = [n for n, s in new_status.items() if s.get("state") == "LEADER"]
-        if len(new_leaders) == 1 and new_leaders[0] != leader_name:
-            new_leader = new_leaders[0]
-            print(f"{GREEN}[PASS] Fault tolerance verified! New Leader elected: {BOLD}{new_leader}{RESET}")
-
-            test_user_survive = f"survive_{uuid.uuid4().hex[:6]}"
-            survive_resp = http_post(f"{NODES[new_leader]}/api/auth/signup", {"username": test_user_survive, "password": "password123"})
-            if survive_resp.get("success"):
-                print(f"{GREEN}[PASS] 2-of-3 majority quorum successfully committed new writes during leader failure!{RESET}")
-            else:
-                print(f"{RED}[FAIL] Write to new leader failed: {survive_resp}{RESET}")
-        else:
-            print(f"{RED}[FAIL] Leader election failed after crash. Leaders: {new_leaders}{RESET}")
-
-        print(f"\nRestarting old leader container ({leader_name})...")
-        subprocess.run(["docker", "compose", "start", f"app-{leader_name}"], check=False)
-        time.sleep(2.0)
-        rejoined_status = get_cluster_status()
-        print_status_table(rejoined_status)
-        print(f"{GREEN}[PASS] Old leader rejoined cluster as FOLLOWER and caught up!{RESET}")
-
-    print(f"\n{BOLD}{GREEN}*** ALL RAFT CONSENSUS TESTS PASSED! ***{RESET}\n")
-    return True
+        old = nodes[leader]
+        subprocess.run(["docker", "stop", "--time", "0", old], check=True, capture_output=True)
+        try:
+            surviving = {node: name for node, name in nodes.items() if node != leader}
+            replacement = wait_for(lambda: pick_leader(surviving), "a replacement leader")
+            require(leader_client.node() != leader, "The original browser cookie did not fail over.")
+            with leader_client.open("/api/events", {"token": bob["token"]}) as feed:
+                expect_event(feed, "READY")
+                sent = send(leader_client, alice, bob["user_id"], "Failover verification " + suffix)
+                expect_event(feed, "NEW_MESSAGE", sent)
+            index = node_status(surviving[replacement])["commit_index"]
+            print(f"PASS {replacement} took over; the same cookie and chat session received SSE after failover.")
+        finally:
+            subprocess.run(["docker", "start", old], check=True, capture_output=True)
+        wait_for(lambda: node_status(old).get("last_applied", -1) >= index, "the restarted leader to catch up")
+        print(f"PASS {leader} restarted and applied through log entry #{index}.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Verify Raft Consensus Cluster")
-    parser.add_argument("--failover-test", action="store_true", help="Include leader crash and failover test")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--failover-test", action="store_true", help="Stop and restart the current leader container")
+    parser.add_argument("--url", default="http://localhost:8000", help="Nginx URL")
     args = parser.parse_args()
-    run_checks(failover=args.failover_test)
+    try:
+        verify(args.url.rstrip("/"), args.failover_test)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        parser.exit(1, f"FAIL {exc}\n")

@@ -71,7 +71,6 @@ async function logout() {
   }
   sessionStorage.removeItem("chat_session");
   sessionStorage.removeItem("chat_current_chat");
-  sessionStorage.removeItem("chat_pinned_node");
   stopEventStream();
   if (historyAbortController) historyAbortController.abort();
   historyAbortController = null;
@@ -121,6 +120,7 @@ function startEventStream() {
 
 async function runEventStream(generation) {
   let retryMs = 1000;
+  let authFailures = 0;
   while (currentUser && !pageSuspended && generation === eventGeneration) {
     const controller = new AbortController();
     eventController = controller;
@@ -135,6 +135,8 @@ async function runEventStream(generation) {
         signal: controller.signal,
       });
       if (response.status === 401) {
+        // A newly selected replica may still be applying the session entry.
+        if (++authFailures < 3) throw new Error("Session unavailable on this replica");
         if (generation === eventGeneration) await logout();
         return;
       }
@@ -155,15 +157,17 @@ async function runEventStream(generation) {
           buffer = buffer.slice(boundary + 2);
           const event = parseSseFrame(frame);
           if (!event) continue;
-          if (event.type === "READY") readyReceived = true;
+          if (event.type === "READY") {
+            readyReceived = true;
+            authFailures = 0;
+          }
           handleRealtimeEvent(event.type, event.data, generation);
         }
       }
       if (generation !== eventGeneration) return;
-      if (!readyReceived) throw new Error("Event stream closed before READY");
+      throw new Error("Event stream closed");
     } catch (e) {
       if (generation !== eventGeneration || e.name === "AbortError") return;
-      try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) {}
       console.warn("Event stream disconnected; reconnecting", e);
     } finally {
       if (eventController === controller) eventController = null;
@@ -206,9 +210,6 @@ function parseSseFrame(frame) {
 
 function handleRealtimeEvent(type, data, generation) {
   if (generation !== eventGeneration) return;
-  if (data && data.node_status) {
-    renderRaftStatusBadge(data.node_status);
-  }
   if (type === "READY") {
     if (snapshotInProgress) {
       anotherSnapshotRequested = true;
@@ -1050,43 +1051,3 @@ window.addEventListener("pageshow", () => {
   pageSuspended = false;
   if (currentUser && !eventController) startEventStream();
 });
-
-function renderRaftStatusBadge(res) {
-  if (res.node_id) {
-    try { sessionStorage.setItem("chat_pinned_node", res.node_id); } catch (_) {}
-  }
-  const state = res.state || "UNKNOWN";
-  const isLeader = state === "LEADER";
-  const color = isLeader ? "#10b981" : "#38bdf8";
-  const bg = isLeader ? "rgba(16, 185, 129, 0.2)" : "rgba(56, 189, 248, 0.2)";
-
-  const authElem = document.getElementById("auth-node-status");
-  if (authElem) {
-    authElem.innerHTML = `Connected to <b>${res.node_id}</b> &bull; <span style="color:${color};font-weight:bold;">${state}</span> (Term ${res.term}, Commit ${res.commit_index})`;
-  }
-
-  const label = document.getElementById("raft-node-label");
-  const badge = document.getElementById("raft-state-badge");
-  if (label && badge) {
-    label.innerText = `${res.node_id} (T:${res.term} C:${res.commit_index})`;
-    badge.innerText = state;
-    badge.style.color = color;
-    badge.style.backgroundColor = bg;
-    badge.style.border = `1px solid ${color}`;
-  }
-}
-
-async function updateRaftStatus() {
-  if (currentUser && eventController) return;
-  try {
-    const res = await api.getStatus();
-    if (res.success) {
-      renderRaftStatusBadge(res);
-    }
-  } catch (e) {
-    // offline or restarting
-  }
-}
-
-updateRaftStatus();
-setInterval(updateRaftStatus, 2000);

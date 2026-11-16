@@ -1,13 +1,28 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Distributed Real-time Chat and Collaboration Tool — Docker Compose
-# Milestone 2: Nginx Load Balancer + Docker DNS Service Discovery (5 Replicas)
+# Milestone 2: Nginx Load Balancer + Docker DNS Service Discovery (6 Replicas)
 #   Web UI (Load Balanced): http://localhost:8000
 #   Scale dynamically     : docker compose up -d --scale app-node=N
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
 
-  # ── Nginx Least-Connections Load Balancer (Docker DNS Service Discovery) ───
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8088}:8080"
+    environment:
+      COMPOSE_PROJECT_NAME: "${COMPOSE_PROJECT_NAME}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - app-node
+    networks:
+      - chat-net
+
+  # ── Nginx Cookie Affinity (Docker DNS Service Discovery) ───────────────────
   nginx-lb:
     image: nginx:alpine
     container_name: nginx-lb
@@ -15,17 +30,11 @@ services:
       - "8000:8000"
     volumes:
       - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
-    command: >
-      /bin/sh -c "
-      (while true; do
-        NEW=$$(getent ahostsv4 app-node | awk '{print $$1}' | sort -u | tr '\n' ' ');
-        if [ \"$$NEW\" != \"$$OLD\" ] && [ -n \"$$OLD\" ]; then
-          nginx -s reload 2>/dev/null || true;
-        fi;
-        OLD=\"$$NEW\";
-        sleep 2;
-      done) &
-      exec nginx -g 'daemon off;'"
+      - ./docker/nginx-replicas.sh:/etc/nginx/raft-start.sh:ro
+    environment:
+      CLUSTER_NODE_PREFIX: "${COMPOSE_PROJECT_NAME}-app-node-"
+      APP_REPLICA_SLOTS: "${APP_REPLICA_SLOTS:-16}"
+    command: ["/bin/sh", "/etc/nginx/raft-start.sh"]
     depends_on:
       - app-node
     networks:
@@ -62,9 +71,11 @@ services:
       dockerfile: docker/Dockerfile.app
     image: distributed-realtime-chat-app-node:latest
     deploy:
-      replicas: 5
+      replicas: 6
     environment:
       CLUSTER_DNS: "app-node"
+      CLUSTER_NODE_PREFIX: "${COMPOSE_PROJECT_NAME}-app-node-"
+      RAFT_VOTER_COUNT: "${RAFT_VOTER_COUNT:-6}"
       PORT:        "50051"
       WEB_PORT:    "8000"
       RAFT_PORT:   "50071"

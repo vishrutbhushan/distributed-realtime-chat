@@ -59,6 +59,7 @@ message PeerReply {
 }
 
 service RaftService {
+  rpc PreVote(RequestVoteArgs)         returns (RequestVoteReply);
   rpc RequestVote(RequestVoteArgs)     returns (RequestVoteReply);
   rpc AppendEntries(AppendEntriesArgs) returns (AppendEntriesReply);
   rpc AddPeer(PeerInfo)                returns (PeerReply);

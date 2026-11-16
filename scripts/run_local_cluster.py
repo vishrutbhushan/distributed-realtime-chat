@@ -8,10 +8,10 @@ Port Formula for Node i (1..10):
   - Raft Port   : 50070 + i        (e.g. 50071, 50072, 50073, 50074, ...)
 
 Usage:
-  1. Start a cluster with N nodes (default 3):
-       python3 scripts/run_local_cluster.py --nodes 3
-  2. Dynamically add a new node (e.g. node-4 on http://localhost:8003) to a running cluster:
-       python3 scripts/run_local_cluster.py --add-node 4
+  1. Start a cluster with N nodes (default 6):
+       python3 scripts/run_local_cluster.py --nodes 6
+  2. Dynamically add a new node (e.g. node-7 on http://localhost:8006) to a running cluster:
+       python3 scripts/run_local_cluster.py --add-node 7
 """
 
 import argparse
@@ -54,7 +54,7 @@ def _base_env() -> dict:
     return env
 
 
-def _spawn_node(idx: int, base_env: dict, initial_count: int = 0):
+def _spawn_node(idx: int, base_env: dict, voter_count: int):
     nid = f"node-{idx}"
     app_port = 50050 + idx
     web_port = 8000 + idx - 1
@@ -63,20 +63,12 @@ def _spawn_node(idx: int, base_env: dict, initial_count: int = 0):
     file_dir = f"/tmp/files_{nid}"
 
     os.makedirs(file_dir, exist_ok=True)
-    for ext in ("", "-wal", "-shm"):
-        if os.path.exists(db_path + ext):
-            try:
-                os.remove(db_path + ext)
-            except OSError:
-                pass
-
     env = base_env.copy()
     env["NODE_INDEX"] = str(idx)
     env["RAFT_PORT_RANGE"] = RAFT_PORT_RANGE
     env["LLM_SERVER"] = "localhost:50060"
-    if initial_count > 0:
-        env["RAFT_PEERS"] = ",".join(f"node-{j}=localhost:{50070+j}" for j in range(1, initial_count + 1))
-        env["APP_PEERS"] = ",".join(f"node-{j}=localhost:{50050+j}" for j in range(1, initial_count + 1))
+    env["RAFT_PEERS"] = ",".join(f"node-{j}=localhost:{50070+j}" for j in range(1, voter_count + 1))
+    env["APP_PEERS"] = ",".join(f"node-{j}=localhost:{50050+j}" for j in range(1, voter_count + 1))
 
     p = subprocess.Popen([PYTHON_EXE, "app/server.py"], cwd=_ROOT, env=env)
     procs.append(p)
@@ -86,31 +78,34 @@ def _spawn_node(idx: int, base_env: dict, initial_count: int = 0):
 
 def main():
     parser = argparse.ArgumentParser(description="Dynamic Raft Cluster Runner")
-    parser.add_argument("--nodes", type=int, default=3, help="Initial number of Raft nodes to launch (default: 3)")
-    parser.add_argument("--add-node", type=int, default=0, help="Dynamically add node-K (e.g. --add-node 4) to a running cluster")
+    parser.add_argument("--nodes", type=int, default=6, help="Initial number of Raft nodes to launch (default: 6)")
+    parser.add_argument("--voters", type=int, default=6, help="Configured voting nodes (default: 6); use the same value when joining")
+    parser.add_argument("--add-node", type=int, default=0, help="Dynamically add node-K (e.g. --add-node 7) to a running cluster")
     args = parser.parse_args()
+    if not 3 <= args.voters <= 10:
+        parser.error("--voters must be between 3 and 10")
+    if args.add_node and not 1 <= args.add_node <= 10:
+        parser.error("--add-node must be between 1 and 10")
+    if not args.add_node and not args.voters <= args.nodes <= 10:
+        parser.error("--nodes must be at least --voters and at most 10")
 
     base_env = _base_env()
     os.makedirs(os.path.join(_ROOT, "generated"), exist_ok=True)
     subprocess.run(
         [PYTHON_EXE, "-m", "grpc_tools.protoc", "-I./proto", "--python_out=./generated", "--grpc_python_out=./generated",
          "./proto/chat.proto", "./proto/llm.proto", "./proto/raft.proto"],
-        cwd=_ROOT, env=base_env, check=False,
+        cwd=_ROOT, env=base_env, check=True,
     )
 
     if args.add_node > 0:
         print(f"=== Dynamically joining node-{args.add_node} into port range {RAFT_PORT_RANGE} ===")
-        _spawn_node(args.add_node, base_env)
+        _spawn_node(args.add_node, base_env, args.voters)
         while True:
             time.sleep(1)
 
     print("=" * 68)
     print(f" STARTING {args.nodes}-NODE RAFT CLUSTER (PORT RANGE {RAFT_PORT_RANGE})")
     print("=" * 68)
-
-    subprocess.run(["pkill", "-f", "app/server.py"], check=False)
-    subprocess.run(["pkill", "-f", "llm/server.py"], check=False)
-    time.sleep(0.4)
 
     llm_env = base_env.copy()
     llm_env["LLM_PORT"] = "50060"
@@ -119,12 +114,13 @@ def main():
     time.sleep(0.3)
 
     for i in range(1, args.nodes + 1):
-        _spawn_node(i, base_env, initial_count=args.nodes)
+        _spawn_node(i, base_env, args.voters)
 
     print("\n" + "=" * 68)
     for i in range(1, args.nodes + 1):
         print(f"   Node {i}: http://localhost:{8000 + i - 1}")
-    print("   To dynamically add another node live: python3 scripts/run_local_cluster.py --add-node 4")
+    if args.nodes < 10:
+        print(f"   Add a replica: python3 scripts/run_local_cluster.py --add-node {args.nodes + 1} --voters {args.voters}")
     print("=" * 68 + "\n")
 
     while True:

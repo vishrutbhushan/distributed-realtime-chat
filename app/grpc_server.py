@@ -189,16 +189,12 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             logger.info("[RAFT-FWD] Forwarding %s from %s -> leader %s", method_name, self.node_id, leader_id)
             rpc_fn = getattr(stub, method_name)
             try:
-                resp = rpc_fn(request, timeout=5.0, metadata=metadata)
-                # Ensure local follower state machine has applied the new session token
-                # before returning Signup/Login response to the browser.
-                if method_name in ("Signup", "Login") and getattr(resp, "success", False) and getattr(resp, "token", ""):
-                    sync_deadline = time.monotonic() + 0.5
-                    while time.monotonic() < sync_deadline:
-                        if self.auth.token_is_valid(resp.token):
-                            break
-                        time.sleep(0.005)
-                return resp
+                if method_name in ("SendDirectMessage", "SendGroupMessage"):
+                    self.raft.telemetry.emit(
+                        "message_forwarded", self.raft.current_term,
+                        peer=leader_id, request_id=request.client_request_id,
+                    )
+                resp, call = rpc_fn.with_call(request, timeout=5.0, metadata=metadata)
             except grpc.RpcError as exc:
                 if attempt == 0 and exc.code() == grpc.StatusCode.UNAVAILABLE:
                     with self._stub_lock:
@@ -206,6 +202,19 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                     time.sleep(0.35)
                     continue
                 context.abort(exc.code(), exc.details())
+            else:
+                index = int(dict(call.trailing_metadata() or ()).get("x-raft-applied-index", "0"))
+                if index and not self.raft.wait_applied(index, timeout=3.0):
+                    context.abort(grpc.StatusCode.FAILED_PRECONDITION,
+                                  "The write committed, but this replica is catching up. Refresh before retrying.")
+                if index:
+                    context.set_trailing_metadata((("x-raft-applied-index", str(index)),))
+                return resp
+
+    @staticmethod
+    def _report_applied_index(context, result):
+        if context is not None and result.get("applied_index"):
+            context.set_trailing_metadata((("x-raft-applied-index", str(result["applied_index"])),))
 
     # ── Authentication helpers ────────────────────────────────────────────────
 
@@ -299,9 +308,10 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             "created_at": now,
             "expires_at": now + SESSION_TTL,
         }
-        ok, err, _, _ = self.raft.propose("SIGNUP", payload)
+        ok, err, _, result = self.raft.propose("SIGNUP", payload)
         if not ok:
             return chat_pb2.SignupResponse(success=False, message=f"Consensus error: {err}")
+        self._report_applied_index(context, result)
         return chat_pb2.SignupResponse(
             success=True,
             token=token,
@@ -352,9 +362,10 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             "created_at": now,
             "expires_at": now + SESSION_TTL,
         }
-        ok, err, _, _ = self.raft.propose("LOGIN", payload)
+        ok, err, _, result = self.raft.propose("LOGIN", payload)
         if not ok:
             return chat_pb2.LoginResponse(success=False, message=f"Consensus error: {err}")
+        self._report_applied_index(context, result)
         return chat_pb2.LoginResponse(
             success=True,
             token=token,
@@ -499,6 +510,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         ok, err, _, res = self.raft.propose("SEND_DM", payload, request_id=c_req_id)
         if not ok or not res.get("success"):
             return chat_pb2.SendMessageResponse(success=False, error=err or res.get("error", "Consensus error"))
+        self._report_applied_index(context, res)
         return chat_pb2.SendMessageResponse(
             success=True,
             message=self._to_message_proto(res["message"]),
@@ -563,6 +575,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         ok, err, _, res = self.raft.propose("CREATE_GROUP", payload)
         if not ok or not res.get("success"):
             return chat_pb2.CreateGroupResponse(success=False, message=err or res.get("error", "Consensus error"))
+        self._report_applied_index(context, res)
         g = res["group"]
         return chat_pb2.CreateGroupResponse(
             success=True,
@@ -661,6 +674,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         ok, err, _, res = self.raft.propose("UPDATE_GROUP", payload)
         if not ok or not res.get("success"):
             return chat_pb2.UpdateGroupResponse(success=False, message=err or res.get("error", "Consensus error"))
+        self._report_applied_index(context, res)
         g = res["group"]
         return chat_pb2.UpdateGroupResponse(
             success=True,
@@ -776,6 +790,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         ok, err, _, res = self.raft.propose("SEND_GROUP_MSG", payload, request_id=c_req_id)
         if not ok or not res.get("success"):
             return chat_pb2.SendMessageResponse(success=False, error=err or res.get("error", "Consensus error"))
+        self._report_applied_index(context, res)
         return chat_pb2.SendMessageResponse(
             success=True,
             message=self._to_message_proto(res["message"]),

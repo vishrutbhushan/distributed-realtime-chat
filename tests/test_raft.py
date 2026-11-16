@@ -13,6 +13,8 @@ import tempfile
 import time
 import unittest
 
+import raft_pb2
+
 from raft.log import LogEntry, RaftLog
 from raft.node import NodeState, RaftNode
 from raft.state_machine import StateMachine
@@ -29,6 +31,12 @@ class DirectRaftStub:
         if not target or not target._running:
             raise RuntimeError("Peer unavailable")
         return target.RequestVote(args, None)
+
+    def PreVote(self, args, timeout=None):
+        target = self._get_target()
+        if not target or not target._running:
+            raise RuntimeError("Peer unavailable")
+        return target.PreVote(args, None)
 
     def AppendEntries(self, args, timeout=None):
         target = self._get_target()
@@ -278,6 +286,7 @@ class RaftClusterIntegrationTests(unittest.TestCase):
             min_election_timeout=0.15,
             max_election_timeout=0.30,
             peer_stubs=stubs4,
+            voter_ids=frozenset(self.peers),
         )
         self.nodes.append(node4)
         self.nodes_map["node-4"] = node4
@@ -295,6 +304,51 @@ class RaftClusterIntegrationTests(unittest.TestCase):
             time.sleep(0.05)
         self.assertIsNotNone(user_on_node4, "Dynamically added node-4 should catch up existing log entries")
         self.assertEqual(user_on_node4["username"], "early_user")
+
+        # Removing the new replica must leave the voting majority unchanged.
+        node4.stop()
+        ok, err, _, _ = leader.propose("BUSINESS_REQUEST", {"payload": "after scale down"})
+        self.assertTrue(ok, err)
+
+    def test_replica_cannot_supply_a_missing_voter(self):
+        leader = self._wait_for_leader()
+        self.assertIsNotNone(leader)
+        for node in self.nodes:
+            if node is not leader:
+                node.stop()
+        leader.register_peer("node-4", "mock:4")
+        with leader._lock:
+            entry = leader.log.append(leader.current_term, "BUSINESS_REQUEST", {})
+            leader.match_index["node-4"] = entry.index
+            leader._advance_commit_index()
+            self.assertLess(leader.commit_index, entry.index)
+
+    def test_heartbeat_matches_only_the_checked_prefix(self):
+        follower = self.nodes[0]
+        with follower._lock:
+            follower.log.append(1, "BUSINESS_REQUEST", {"payload": "uncommitted"})
+            request = raft_pb2.AppendEntriesArgs(**{
+                "from": "node-2", "to": follower.node_id, "term": follower.current_term + 1,
+                "commit_index": 1,
+            })
+            response = follower.AppendEntries(request, None)
+            self.assertTrue(response.entry_appended)
+            self.assertEqual(response.match_index, 0)
+            self.assertEqual(follower.commit_index, 0)
+            request.prev_index = 1
+            request.prev_term = 2
+            self.assertFalse(follower.AppendEntries(request, None).entry_appended)
+            self.assertEqual(follower.log.term_at(1), 1)
+
+    def test_pre_vote_does_not_interrupt_a_healthy_leader(self):
+        leader = self._wait_for_leader()
+        self.assertIsNotNone(leader)
+        follower = next(node for node in self.nodes if node is not leader)
+        with leader._lock:
+            term = leader.current_term
+            request = follower._vote_request(leader.node_id, term + 5)
+            self.assertFalse(leader.PreVote(request, None).vote_granted)
+            self.assertEqual(leader.current_term, term)
 
 
 if __name__ == "__main__":

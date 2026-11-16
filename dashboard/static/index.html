@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Raft Observatory</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <h1>Raft Observatory</h1>
+      <span class="connection" id="connection">Connecting</span>
+    </header>
+    <section class="status-line" aria-label="Cluster status" id="metrics"></section>
+    <div class="workspace">
+      <div class="observations">
+        <section class="section" aria-labelledby="replica-heading">
+          <div class="section-head">
+            <div><h2 id="replica-heading">Cluster map</h2><p>Select a node to control it.</p></div>
+          </div>
+          <div class="cluster-map"><canvas id="map-links" aria-hidden="true"></canvas><div id="map-nodes"></div></div>
+          <p class="log-note" id="membership-note"></p>
+          <p class="log-note">Entry numbers count all Raft log entries, including internal changes.</p>
+          <details class="disclosure" id="activity-details">
+            <summary>Replica history</summary>
+            <div class="disclosure-toolbar">
+            <select id="window" aria-label="Timeline range">
+              <option value="60">Last 60 seconds</option>
+              <option value="incident">Since last stop</option>
+            </select>
+            </div>
+            <div class="activity-scroll"><div id="nodes" class="activity"></div></div>
+            <ul class="legend" aria-label="Replica timeline legend">
+              <li><i class="state-leader"></i>Leader</li><li><i class="state-follower"></i>Follower</li>
+              <li><i class="state-candidate"></i>Candidate</li><li><i class="state-stopped"></i>Stopped</li>
+              <li><i class="state-unknown"></i>Unobserved</li>
+            </ul>
+          </details>
+        </section>
+        <section class="section" aria-labelledby="trace-heading">
+          <div class="section-head"><div><h2 id="trace-heading">What happened to the message?</h2><p id="trace-label">Send or select a chat message to trace it.</p></div>
+            <select id="trace-picker" aria-label="Choose an observed chat message" hidden></select>
+          </div>
+          <ol id="message-steps" class="message-steps" aria-label="Message replication steps"></ol>
+          <details class="disclosure">
+            <summary>Technical sequence and replay</summary>
+            <div class="transport" aria-label="Message playback">
+              <button type="button" id="trace-live" aria-pressed="true">Live</button>
+              <button type="button" id="trace-pause" aria-pressed="false">Pause display</button>
+              <button type="button" id="trace-prev" disabled>Previous</button>
+              <button type="button" id="trace-next" disabled>Next event</button>
+              <span id="trace-position"></span>
+            </div>
+            <p id="trace-summary" class="trace-summary" hidden></p>
+            <div id="trace" class="sequence-scroll" aria-label="Message events in time order"></div>
+            <div id="trace-detail" class="trace-detail" hidden></div>
+          </details>
+        </section>
+        <section class="section inspector" aria-labelledby="events-heading">
+          <div class="section-head"><div><h2 id="events-heading">Event inspector</h2><p>Events reported by the Raft nodes and Docker.</p></div>
+            <div class="filters" id="filters" role="group" aria-label="Filter events">
+              <button data-filter="all" aria-pressed="true">All</button>
+              <button data-filter="election" aria-pressed="false">Elections</button>
+              <button data-filter="message" aria-pressed="false">Message</button>
+            </div>
+          </div>
+          <ol id="timeline"></ol>
+        </section>
+      </div>
+      <aside class="rail">
+        <section class="section controls" aria-labelledby="controls-heading">
+          <h2 id="controls-heading">Cluster controls</h2>
+          <button class="primary" id="send" data-action="send">Send a chat message</button>
+          <button id="add" data-action="add">Add a replica</button>
+          <button class="danger" id="stop_leader" data-action="stop_leader">Stop current leader</button>
+          <label for="target">Replica</label>
+          <select id="target" aria-label="Choose a replica"></select>
+          <div class="button-row"><button id="stop" data-action="stop">Stop</button><button id="start" data-action="start">Restart</button></div>
+          <p class="notice" id="notice" role="status"></p>
+        </section>
+        <section class="section" aria-labelledby="election-heading">
+          <h2 id="election-heading">Elections</h2>
+          <p id="election-label">Waiting for election events.</p>
+          <ul id="votes" class="votes"></ul>
+          <h3 class="terms-heading" id="terms-heading">Recent terms</h3>
+          <ul id="recent-terms" class="votes" aria-labelledby="terms-heading"></ul>
+        </section>
+      </aside>
+    </div>
+  </main>
+</body>
+</html>

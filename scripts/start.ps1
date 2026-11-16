@@ -25,14 +25,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Docker Compose v2 is unavailable.' }
 docker info | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Docker Desktop is not running.' }
 
-Write-Host 'Removing previous containers and volumes...' -ForegroundColor Cyan
-cmd.exe /d /c 'docker compose down -v --remove-orphans >nul 2>&1'
-if ($LASTEXITCODE -ne 0) { throw 'Could not remove the previous Docker Compose stack.' }
-
 if (-not $NoRebuild) {
     Write-Host 'Building Docker images...' -ForegroundColor Cyan
     $BuildLog = Join-Path $LogDir 'build.log'
-    $BuildCommand = 'docker compose build app-node-1 > "' + $BuildLog + '" 2>&1'
+    $BuildCommand = 'docker compose build app-node llm-server dashboard > "' + $BuildLog + '" 2>&1'
     cmd.exe /d /c $BuildCommand
     $BuildExitCode = $LASTEXITCODE
     if ($BuildExitCode -ne 0) {
@@ -41,7 +37,7 @@ if (-not $NoRebuild) {
     }
 }
 
-Write-Host 'Starting application services (Nginx Load Balancer + 5-Node Raft Cluster + LLM)...' -ForegroundColor Cyan
+Write-Host 'Starting Nginx, Raft replicas, and the LLM service...' -ForegroundColor Cyan
 cmd.exe /d /c 'docker compose up --detach --no-build >nul 2>&1'
 if ($LASTEXITCODE -ne 0) { throw 'Application services failed to start.' }
 
@@ -50,12 +46,11 @@ Write-Host '=================================================================' -
 Write-Host ' DISTRIBUTED REAL-TIME CHAT & COLLABORATION PLATFORM (M2 RAFT)' -ForegroundColor Cyan
 Write-Host '=================================================================' -ForegroundColor Cyan
 Write-Host ' Nginx Load Balancer (Main UI): http://localhost:8000' -ForegroundColor Green
-Write-Host ' Direct Node UIs (Nodes 1..5):  http://localhost:8001 .. 8005' -ForegroundColor Green
-Write-Host ' gRPC App Nodes (1..5):         localhost:50051 .. 50055' -ForegroundColor White
-Write-Host ' Raft Peer Nodes (1..5):        localhost:50071 .. 50075' -ForegroundColor White
+$DashboardPort = if ($env:DASHBOARD_PORT) { $env:DASHBOARD_PORT } else { '8088' }
+Write-Host " Raft dashboard:               http://localhost:$DashboardPort" -ForegroundColor Green
 Write-Host ' LLM Server port:               localhost:50060' -ForegroundColor White
 Write-Host ''
-Write-Host ' 5-Node Raft cluster is live behind Nginx (least_conn).' -ForegroundColor Yellow
+Write-Host ' Scale replicas: docker compose up -d --no-deps --scale app-node=7 app-node' -ForegroundColor Yellow
 Write-Host ' Open multiple tabs at http://localhost:8000 in your browser!' -ForegroundColor Yellow
 Write-Host ' Logs: logs\app.log' -ForegroundColor Yellow
 Write-Host ' To stop: .\scripts\stop.ps1' -ForegroundColor Cyan

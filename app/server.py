@@ -15,6 +15,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 from typing import Dict
 
 import grpc
@@ -45,17 +46,24 @@ def _resolve_container_identity() -> tuple[str, str]:
         if idx > 0:
             node_id = f"node-{idx}"
         elif os.environ.get("CLUSTER_DNS"):
-            node_id = f"node-{hostname[:6]}"
+            prefix = os.environ["CLUSTER_NODE_PREFIX"]
             for _attempt in range(10):
-                for i in range(1, 25):
-                    for prefix in ("distributed-realtime-chat-app-node-", "app-node-"):
-                        try:
-                            if socket.gethostbyname(f"{prefix}{i}") == ip:
-                                return f"node-{i}", ip
-                        except Exception:
-                            pass
-                import time as _t
-                _t.sleep(0.05)
+                try:
+                    names = socket.gethostbyaddr(ip)[:2]
+                    for name in (names[0], *names[1]):
+                        match = re.fullmatch(re.escape(prefix) + r"([1-9][0-9]*)(?:\..*)?", name)
+                        if match:
+                            return f"node-{match[1]}", ip
+                except OSError:
+                    pass
+                for i in range(1, 65):
+                    try:
+                        if socket.gethostbyname(f"{prefix}{i}") == ip:
+                            return f"node-{i}", ip
+                    except OSError:
+                        pass
+                time.sleep(0.05)
+            raise RuntimeError(f"Cannot map {ip} to a Compose replica with prefix {prefix!r}")
         else:
             node_id = "node-1"
     return node_id, ip
@@ -112,6 +120,14 @@ def serve():
     raft_node = None
     raft_server = None
     if RAFT_PORT > 0 or raft_peers or CLUSTER_DNS:
+        if CLUSTER_DNS:
+            prefix = os.environ["CLUSTER_NODE_PREFIX"]
+            voter_count = int(os.environ.get("RAFT_VOTER_COUNT", "6"))
+            if voter_count < 3:
+                raise ValueError("RAFT_VOTER_COUNT must be at least 3")
+            raft_peers = {f"node-{i}": f"{prefix}{i}:{RAFT_PORT}" for i in range(1, voter_count + 1)}
+            app_peers = {f"node-{i}": f"{prefix}{i}:{PORT}" for i in range(1, voter_count + 1)}
+        voter_ids = frozenset(raft_peers or {NODE_ID})
         self_raft = raft_peers.get(NODE_ID, f"{RAFT_HOST}:{RAFT_PORT}")
         self_app = app_peers.get(NODE_ID, f"{RAFT_HOST}:{PORT}")
         raft_peers.setdefault(NODE_ID, self_raft)
@@ -125,27 +141,10 @@ def serve():
             app_peers=app_peers,
             self_raft_addr=self_raft,
             self_app_addr=self_app,
+            voter_ids=voter_ids,
+            # Give incoming heartbeats time to reach a restarted voter before it campaigns.
+            startup_grace=2.0 if CLUSTER_DNS else 0.0,
         )
-        if RAFT_PORT > 0:
-            raft_server = grpc.server(futures.ThreadPoolExecutor(max_workers=16), options=_GRPC_OPTS)
-            raft_pb2_grpc.add_RaftServiceServicer_to_server(raft_node, raft_server)
-            raft_server.add_insecure_port(f"[::]:{RAFT_PORT}")
-            raft_server.start()
-            logger.info("[SERVER] RaftService listening on [::]:%d", RAFT_PORT)
-
-            if CLUSTER_DNS:
-                threading.Thread(
-                    target=raft_node.discover_docker_dns,
-                    args=(CLUSTER_DNS, RAFT_PORT, PORT),
-                    daemon=True,
-                ).start()
-            elif RAFT_PORT_RANGE and "-" in RAFT_PORT_RANGE:
-                p_start, p_end = (int(x) for x in RAFT_PORT_RANGE.split("-", 1))
-                threading.Thread(
-                    target=raft_node.discover_port_range,
-                    args=(RAFT_HOST, p_start, p_end),
-                    daemon=True,
-                ).start()
 
     servicer = ChatServicer(
         db=db,
@@ -155,6 +154,27 @@ def serve():
         raft_node=raft_node,
         app_peers=app_peers,
     )
+
+    if raft_node and RAFT_PORT > 0:
+        raft_server = grpc.server(futures.ThreadPoolExecutor(max_workers=16), options=_GRPC_OPTS)
+        raft_pb2_grpc.add_RaftServiceServicer_to_server(raft_node, raft_server)
+        raft_server.add_insecure_port(f"[::]:{RAFT_PORT}")
+        raft_server.start()
+        logger.info("[SERVER] RaftService listening on [::]:%d", RAFT_PORT)
+
+        if CLUSTER_DNS:
+            threading.Thread(
+                target=raft_node.discover_docker_dns,
+                args=(CLUSTER_DNS, RAFT_PORT),
+                daemon=True,
+            ).start()
+        elif RAFT_PORT_RANGE and "-" in RAFT_PORT_RANGE:
+            p_start, p_end = (int(x) for x in RAFT_PORT_RANGE.split("-", 1))
+            threading.Thread(
+                target=raft_node.discover_port_range,
+                args=(RAFT_HOST, p_start, p_end),
+                daemon=True,
+            ).start()
 
     grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=16), options=_GRPC_OPTS)
     chat_pb2_grpc.add_ChatServiceServicer_to_server(servicer, grpc_server)
@@ -172,11 +192,7 @@ def serve():
     llm_rpc_server.start()
 
     from app.web_gateway import WebGatewayHandler
-    WebGatewayHandler.node_status_fn = (
-        raft_node.status
-        if raft_node
-        else lambda: {"node_id": NODE_ID, "state": "STANDALONE", "term": 0, "leader_id": NODE_ID, "commit_index": 0, "last_applied": 0}
-    )
+    WebGatewayHandler.node_monitor_fn = raft_node.monitor if raft_node else None
     httpd = run_web_gateway(
         port=WEB_PORT,
         grpc_target=f"localhost:{PORT}",

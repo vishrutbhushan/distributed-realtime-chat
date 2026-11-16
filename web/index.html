@@ -9,9 +9,6 @@
 <body>
   <div id="auth-container">
     <div class="auth-card">
-      <div id="auth-node-status" style="text-align: center; font-size: 12px; margin-bottom: 12px; padding: 6px; border-radius: 6px; background: rgba(255,255,255,0.05); color: #94a3b8;">
-        Connecting to cluster...
-      </div>
       <div class="auth-tabs">
         <button class="auth-tab active" id="tab-login" onclick="switchTab('login')">Log In</button>
         <button class="auth-tab" id="tab-signup" onclick="switchTab('signup')">Sign Up</button>
@@ -41,10 +38,6 @@
           <span style="font-weight: 600; font-size: 14px;" id="current-username">Username</span>
         </div>
         <button class="btn-logout" onclick="logout()">Logout</button>
-      </div>
-      <div id="sidebar-raft-status" style="padding: 8px 16px; font-size: 11px; background: rgba(0,0,0,0.2); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
-        <span id="raft-node-label" style="color: #94a3b8;">Node: --</span>
-        <span id="raft-state-badge" style="padding: 2px 6px; border-radius: 4px; font-weight: 700; font-size: 10px;">--</span>
       </div>
 
       <div class="sidebar-sections">

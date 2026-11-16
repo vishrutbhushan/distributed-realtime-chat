@@ -4,42 +4,23 @@
 
 const API_BASE = "";
 
-function withPinnedNode(url) {
-  try {
-    const pinned = sessionStorage.getItem("chat_pinned_node");
-    if (!pinned) return url;
-    const sep = url.includes("?") ? "&" : "?";
-    return `${url}${sep}node=${encodeURIComponent(pinned)}`;
-  } catch (_) {
-    return url;
-  }
-}
-
 async function fetchWithFailover(url, options = {}, retries = 2) {
   for (let i = 0; i <= retries; i++) {
     try {
-      const targetUrl = i === 0 ? withPinnedNode(url) : url;
-      const res = await fetch(targetUrl, options);
+      const res = await fetch(url, options);
       if (res.status >= 502 && i < retries) {
-        try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) { }
-        await new Promise(r => setTimeout(r, 150));
+        await new Promise(r => setTimeout(r, 250 * (i + 1)));
         continue;
       }
       return res;
     } catch (err) {
       if (err.name === "AbortError" || i === retries) throw err;
-      try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) { }
-      await new Promise(r => setTimeout(r, 150));
+      await new Promise(r => setTimeout(r, 250 * (i + 1)));
     }
   }
 }
 
 const api = {
-  async getStatus() {
-    const res = await fetchWithFailover(`${API_BASE}/api/status`);
-    return res.json();
-  },
-
   async signup(username, password) {
     const res = await fetchWithFailover(`${API_BASE}/api/signup`, {
       method: "POST",
@@ -78,7 +59,7 @@ const api = {
   },
 
   eventStreamUrl(token) {
-    return withPinnedNode(`${API_BASE}/api/events?token=${encodeURIComponent(token)}`);
+    return `${API_BASE}/api/events?token=${encodeURIComponent(token)}`;
   },
 
   async getDMs(token, otherUserId, signal) {

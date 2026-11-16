@@ -69,7 +69,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
     grpc_stub: chat_pb2_grpc.ChatServiceStub = None
     stream_stub: chat_pb2_grpc.ChatServiceStub = None
     llm_stub: chat_pb2_grpc.ChatServiceStub = None
-    node_status_fn = None
+    node_monitor_fn = None
 
     def setup(self):
         super().setup()
@@ -96,6 +96,14 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_write_error(self, exc, field="message"):
+        status = {
+            grpc.StatusCode.UNAVAILABLE: 503,
+            grpc.StatusCode.DEADLINE_EXCEEDED: 504,
+            grpc.StatusCode.FAILED_PRECONDITION: 409,
+        }.get(exc.code(), 400)
+        self._send_json(status, {"success": False, field: exc.details()})
+
     def _read_json(self) -> dict:
         content_len = int(self.headers.get("Content-Length", 0))
         if content_len == 0:
@@ -113,6 +121,19 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == "/internal/raft-monitor":
+            monitor = WebGatewayHandler.node_monitor_fn
+            if monitor is None:
+                self._send_json(503, {"error": "Raft monitoring is unavailable"})
+                return
+            query = urllib.parse.parse_qs(parsed.query)
+            try:
+                after = max(0, int(query.get("after", ["0"])[0]))
+            except ValueError:
+                self._send_json(400, {"error": "Invalid event cursor"})
+                return
+            self._send_json(200, monitor(after, query.get("boot", [""])[0]))
+            return
         qs = urllib.parse.parse_qs(parsed.query)
 
         # Serve the single-page web application and static assets
@@ -263,7 +284,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             try:
                 resp = self.grpc_stub.DownloadFile(chat_pb2.DownloadFileRequest(token=token, file_id=file_id))
                 if not resp.success:
-                    self.send_error(404, resp.error or "File not found")
+                    self.send_error(404, "File not found")
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", resp.file.content_type)
@@ -386,11 +407,6 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             payload["chat_type"] = event.message.chat_type
             payload["target_id"] = event.message.group_id or event.message.recipient_id
             payload["local_only"] = event.message.content == "local_only"
-        if WebGatewayHandler.node_status_fn is not None:
-            try:
-                payload["node_status"] = WebGatewayHandler.node_status_fn()
-            except Exception:
-                pass
         encoded = json.dumps(payload, separators=(",", ":"))
         frame = f"event: {event_type}\ndata: {encoded}\n\n".encode("utf-8")
         self.wfile.write(frame)
@@ -415,7 +431,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                     "message": resp.message,
                 })
             except grpc.RpcError as e:
-                self._send_json(400, {"success": False, "message": e.details()})
+                self._send_write_error(e)
             return
 
         # POST /api/auth/login or /api/login
@@ -433,7 +449,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                     "message": resp.message,
                 })
             except grpc.RpcError as e:
-                self._send_json(400, {"success": False, "message": e.details()})
+                self._send_write_error(e)
             return
 
         # POST /api/auth/logout or /api/logout
@@ -443,7 +459,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                 resp = self.grpc_stub.Logout(chat_pb2.LogoutRequest(token=data.get("token", "")))
                 self._send_json(200, {"success": resp.success, "message": resp.message})
             except grpc.RpcError as e:
-                self._send_json(400, {"success": False, "message": e.details()})
+                self._send_write_error(e)
             return
 
         # POST /api/messages/dm
@@ -466,7 +482,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                     "error": resp.error,
                 })
             except grpc.RpcError as e:
-                self._send_json(400, {"success": False, "error": e.details()})
+                self._send_write_error(e, "error")
             return
 
         # POST /api/messages/group
@@ -489,7 +505,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                     "error": resp.error,
                 })
             except grpc.RpcError as e:
-                self._send_json(400, {"success": False, "error": e.details()})
+                self._send_write_error(e, "error")
             return
 
         # POST /api/chat/read or /api/messages/read
@@ -505,7 +521,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                 )
                 self._send_json(200, {"success": resp.success})
             except grpc.RpcError as e:
-                self._send_json(400, {"success": False, "error": e.details()})
+                self._send_write_error(e, "error")
             return
 
         # POST /api/groups (Create group)
@@ -532,7 +548,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                     "message": resp.message,
                 })
             except grpc.RpcError as e:
-                self._send_json(400, {"success": False, "message": e.details()})
+                self._send_write_error(e)
             return
 
         # POST /api/groups/{id}/update or /api/groups/update
@@ -558,7 +574,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                     "message": resp.message,
                 })
             except grpc.RpcError as e:
-                self._send_json(400, {"success": False, "message": e.details()})
+                self._send_write_error(e)
             return
 
         # POST /api/files/upload

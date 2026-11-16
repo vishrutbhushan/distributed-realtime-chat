@@ -1,16 +1,23 @@
 """File RPC authorization follows current DM and group membership."""
 
+from concurrent import futures
 import os
 import tempfile
 import unittest
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 import chat_pb2
+import chat_pb2_grpc
+import grpc
 
 from app.auth.manager import AuthManager
 from app.chat.manager import ChatManager
 from app.files.manager import FileManager
 from app.grpc_server import ChatServicer
 from app.presence.manager import PresenceManager
+from app.web_gateway import run_web_gateway
 from storage.database import Database
 
 
@@ -106,6 +113,26 @@ class FileAuthorizationTests(unittest.TestCase):
         self.assertIn("not found", unknown_user.message.lower())
         self.assertFalse(unsupported.success)
         self.assertIn("unsupported", unsupported.message.lower())
+
+    def test_http_download_hides_a_private_file_from_an_outsider(self):
+        owner_token, _ = self.create_user("http_owner")
+        _, recipient_id = self.create_user("http_recipient")
+        outsider_token, _ = self.create_user("http_outsider")
+        uploaded = self.upload(owner_token, "DM", recipient_id)
+        self.assertTrue(uploaded.success, uploaded.message)
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
+        chat_pb2_grpc.add_ChatServiceServicer_to_server(self.service, server)
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        self.addCleanup(lambda: server.stop(0).wait())
+        gateway = run_web_gateway(port=0, grpc_target=f"127.0.0.1:{port}")
+        self.addCleanup(gateway.server_close)
+        self.addCleanup(gateway.shutdown)
+        query = urlencode({"token": outsider_token, "file_id": uploaded.file.file_id})
+        with self.assertRaises(HTTPError) as result:
+            urlopen(f"http://127.0.0.1:{gateway.server_address[1]}/api/files/download?{query}", timeout=3)
+        with result.exception as response:
+            self.assertEqual(response.code, 404)
 
 
 if __name__ == "__main__":
