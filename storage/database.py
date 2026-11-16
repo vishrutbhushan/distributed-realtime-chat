@@ -140,6 +140,22 @@ class Database:
                     PRIMARY KEY (user_id, chat_type, target_id),
                     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS raft_meta (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS raft_log (
+                    log_index    INTEGER PRIMARY KEY,
+                    term         INTEGER NOT NULL,
+                    command_type TEXT NOT NULL,
+                    payload      TEXT NOT NULL,
+                    request_id   TEXT DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_raft_log_req
+                    ON raft_log(request_id);
             """)
 
     # Query helpers used by the managers

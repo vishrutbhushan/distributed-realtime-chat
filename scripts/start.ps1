@@ -41,11 +41,23 @@ if (-not $NoRebuild) {
     }
 }
 
-Write-Host 'Starting application services...' -ForegroundColor Cyan
-cmd.exe /d /c 'docker compose up --detach --no-build llm-server app-node-1 >nul 2>&1'
+Write-Host 'Starting application services (3-Node Raft Cluster + LLM)...' -ForegroundColor Cyan
+cmd.exe /d /c 'docker compose up --detach --no-build llm-server app-node-1 app-node-2 app-node-3 >nul 2>&1'
 if ($LASTEXITCODE -ne 0) { throw 'Application services failed to start.' }
 
 Write-Host ''
-Write-Host 'Application started: http://localhost:8000' -ForegroundColor Green
-Write-Host 'Logs: logs/app.log' -ForegroundColor Yellow
-Write-Host 'To stop: .\scripts\stop.ps1' -ForegroundColor Cyan
+Write-Host '=================================================================' -ForegroundColor Cyan
+Write-Host ' DISTRIBUTED REAL-TIME CHAT & COLLABORATION PLATFORM (M2 RAFT)' -ForegroundColor Cyan
+Write-Host '=================================================================' -ForegroundColor Cyan
+Write-Host ' Web UI Node 1:       http://localhost:8000' -ForegroundColor Green
+Write-Host ' Web UI Node 2:       http://localhost:8001' -ForegroundColor Green
+Write-Host ' Web UI Node 3:       http://localhost:8002' -ForegroundColor Green
+Write-Host ' gRPC App Node 1:     localhost:50051 (Raft: 50071)' -ForegroundColor White
+Write-Host ' gRPC App Node 2:     localhost:50052 (Raft: 50072)' -ForegroundColor White
+Write-Host ' gRPC App Node 3:     localhost:50053 (Raft: 50073)' -ForegroundColor White
+Write-Host ' LLM Server port:     localhost:50060' -ForegroundColor White
+Write-Host ''
+Write-Host ' 3-Node Raft cluster is live. Open http://localhost:8000 in browser.' -ForegroundColor Yellow
+Write-Host ' Logs: logs\app.log' -ForegroundColor Yellow
+Write-Host ' To stop: .\scripts\stop.ps1' -ForegroundColor Cyan
+Write-Host '=================================================================' -ForegroundColor Cyan

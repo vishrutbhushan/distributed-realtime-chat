@@ -146,6 +146,23 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
             self._serve_event_stream(token)
             return
 
+        # GET /api/status (Raft Node Status)
+        if path == "/api/status":
+            try:
+                resp = self.grpc_stub.GetNodeStatus(chat_pb2.GetNodeStatusRequest())
+                self._send_json(200, {
+                    "success": True,
+                    "node_id": resp.node_id,
+                    "state": resp.state,
+                    "term": resp.term,
+                    "leader_id": resp.leader_id,
+                    "commit_index": resp.commit_index,
+                    "last_applied": resp.last_applied,
+                })
+            except Exception as e:
+                self._send_json(500, {"success": False, "error": str(e)})
+            return
+
         # GET /api/users
         if path == "/api/users":
             try:
@@ -156,9 +173,9 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                         "username": u.username,
                         "status": u.status,
                         "last_seen": u.last_seen,
-                        "last_message_time": u.last_message_time,
-                        "unread_count": u.unread_count,
-                        "last_message": u.last_message,
+                        "last_message_time": getattr(u, "last_message_time", 0),
+                        "unread_count": getattr(u, "unread_count", 0),
+                        "last_message": getattr(u, "last_message", ""),
                     }
                     for u in resp.users
                 ]
@@ -180,9 +197,9 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                         "created_at": g.created_at,
                         "member_count": g.member_count,
                         "user_role": g.user_role,
-                        "last_message_time": g.last_message_time,
-                        "unread_count": g.unread_count,
-                        "last_message": g.last_message,
+                        "last_message_time": getattr(g, "last_message_time", 0),
+                        "unread_count": getattr(g, "unread_count", 0),
+                        "last_message": getattr(g, "last_message", ""),
                     }
                     for g in resp.groups
                 ]
