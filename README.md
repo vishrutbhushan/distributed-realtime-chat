@@ -6,6 +6,15 @@ A lightweight,  real-time chat platform powered by **gRPC microservices** and a 
 
 ## 1. Quick Start
 
+### Local URLs
+
+After starting the stack, open these addresses on the machine running Docker:
+
+| Service | Default address |
+|---|---|
+| Chat app | [http://localhost:8000](http://localhost:8000) |
+| Raft Observatory dashboard | [http://localhost:8088](http://localhost:8088) |
+
 Run the appropriate script to start or stop the full stack:
 
 | OS | Start | Stop |
@@ -14,7 +23,6 @@ Run the appropriate script to start or stop the full stack:
 | **Windows (PowerShell)** | `.\scripts\start.ps1` | `.\scripts\stop.ps1` |
 | **macOS / Linux** | `bash scripts/start.sh` | `bash scripts/stop.sh` |
 
-- **Web App**: Open [http://localhost:8000](http://localhost:8000) to sign up and start chatting.
 - **Logs**: Streamed live in your console and saved to `logs/app.log`.
 - **Teardown**: Press `Ctrl+C` or run the stop script to cleanly remove all containers and volumes with zero lingering background processes.
 
