@@ -21,14 +21,14 @@ async function fetchWithFailover(url, options = {}, retries = 2) {
       const targetUrl = i === 0 ? withPinnedNode(url) : url;
       const res = await fetch(targetUrl, options);
       if (res.status >= 502 && i < retries) {
-        try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) {}
+        try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) { }
         await new Promise(r => setTimeout(r, 150));
         continue;
       }
       return res;
     } catch (err) {
       if (err.name === "AbortError" || i === retries) throw err;
-      try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) {}
+      try { sessionStorage.removeItem("chat_pinned_node"); } catch (_) { }
       await new Promise(r => setTimeout(r, 150));
     }
   }
