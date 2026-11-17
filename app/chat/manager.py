@@ -87,6 +87,22 @@ class ChatManager:
                 return len(self._subs.get(user_id, []))
             return sum(len(subscribers) for subscribers in self._subs.values())
 
+    def get_connected_users(self) -> list:
+        """Return usernames of users with active event streams on this replica."""
+        with self._sub_lock:
+            user_ids = list(self._subs.keys())
+        if not user_ids:
+            return []
+        placeholders = ",".join("?" for _ in user_ids)
+        rows = self.db.fetchall(
+            f"SELECT DISTINCT username FROM users WHERE user_id IN ({placeholders})",
+            tuple(user_ids),
+        )
+        return sorted(
+            row["username"] for row in rows
+            if not (row["username"].startswith("check_") or row["username"].startswith("monitor_") or row["username"].startswith("test_user_"))
+        )
+
     def is_group_member(self, group_id: str, user_id: str) -> bool:
         row = self.db.fetchone(
             "SELECT 1 FROM group_members WHERE group_id = ? AND user_id = ?",

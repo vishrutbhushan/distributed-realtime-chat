@@ -468,13 +468,17 @@ async function loadDirectory() {
 function renderUsersList(users) {
   const list = document.getElementById("users-list");
   list.innerHTML = "";
-  if (users.length === 0) {
+  const visibleUsers = (users || []).filter(u => {
+    const name = (u.username || "").toLowerCase();
+    return !name.startsWith("check_") && !name.startsWith("monitor_") && !name.startsWith("test_user_");
+  });
+  if (visibleUsers.length === 0) {
     list.innerHTML = `<li style="font-size: 12px; color: var(--text-muted); padding: 8px;">No other users registered.</li>`;
     return;
   }
 
   // Sort users in real-time: Most recently active chat moves to the top
-  const sortedUsers = [...users].sort((a, b) => {
+  const sortedUsers = [...visibleUsers].sort((a, b) => {
     const timeA = a.last_message_time || 0;
     const timeB = b.last_message_time || 0;
     if (timeB !== timeA) return timeB - timeA;

@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import random
 import re
 import socket
 from threading import Lock, Thread
@@ -247,7 +248,7 @@ class Monitor:
                 and item["online"] and item.get("leader_id") == leader
                 and containers.get(item["node_id"], {}).get("State") == "running"
             ]
-        node = followers[0] if followers else leader
+        node = random.choice(followers) if followers else leader
         marker = uuid4().hex
         request_id = f"dashboard-{marker}"
         message = f"Dashboard test message {marker[:7]}"
@@ -291,7 +292,7 @@ class Monitor:
         host = source["HostConfig"]
         network = f"{self.project}_chat-net"
         created = engine("POST", "/containers/create?" + urlencode({"name": name}), {
-            "Image": source["Image"],
+            "Image": config.get("Image") or source["Image"],
             "Env": config["Env"], "Cmd": config["Cmd"], "Entrypoint": config["Entrypoint"],
             "Labels": labels,
             "HostConfig": {**{key: host[key] for key in ("Binds", "Mounts", "RestartPolicy") if key in host},

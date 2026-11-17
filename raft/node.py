@@ -525,15 +525,20 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             return self.last_applied >= index
 
     def _trace_entry(self, kind, entry, **fields):
+        preview = ""
+        if isinstance(entry.payload, dict):
+            preview = str(entry.payload.get("content", ""))[:32]
         self.telemetry.emit(
             kind, entry.term, index=entry.index, command=entry.command_type,
-            request_id=entry.request_id, **fields,
+            request_id=entry.request_id, preview=preview, **fields,
         )
 
     def monitor(self, after, boot):
+        active_users = self.active_users_fn() if getattr(self, "active_users_fn", None) else []
         with self._lock:
             return {
                 **self.status(),
+                "active_users": active_users,
                 "voters": sorted(self.voter_ids),
                 "quorum": self.quorum,
                 "last_index": self.log.last_index(),

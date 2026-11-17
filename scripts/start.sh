@@ -9,10 +9,14 @@ log_file="logs/app.log"
 : > "$log_file"
 
 if command -v python3 >/dev/null 2>&1; then
-  if [ ! -x ".venv/bin/python" ]; then
-    python3 -m venv .venv
+  if python3 -c "import ensurepip" >/dev/null 2>&1; then
+    if [ ! -x ".venv/bin/python" ]; then
+      python3 -m venv .venv 2>/dev/null || true
+    fi
+    if [ -x ".venv/bin/python" ]; then
+      .venv/bin/python -m pip install -q --disable-pip-version-check -r requirements.txt 2>/dev/null || true
+    fi
   fi
-  .venv/bin/python -m pip install -q --disable-pip-version-check -r requirements.txt
 fi
 
 command -v docker >/dev/null 2>&1 || { echo "Docker CLI was not found." >&2; exit 1; }

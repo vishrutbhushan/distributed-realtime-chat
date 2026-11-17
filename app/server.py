@@ -154,6 +154,8 @@ def serve():
         raft_node=raft_node,
         app_peers=app_peers,
     )
+    if raft_node:
+        raft_node.active_users_fn = servicer.chat.get_connected_users
 
     if raft_node and RAFT_PORT > 0:
         raft_server = grpc.server(futures.ThreadPoolExecutor(max_workers=16), options=_GRPC_OPTS)

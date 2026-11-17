@@ -22,6 +22,7 @@ let sending = false;
 let pickedRequest = "";
 let lastDemoRequest = "";
 let pendingSelection = "";
+let lastAutoPickedId = "";
 let recentlyStopped = "";
 let frozenTrace = null;
 let activeStep = -1;
@@ -73,9 +74,11 @@ function renderMap(nodes, leader) {
     const progress = !n.online ? (role === "Stopped" ? "Offline" : "Awaiting status")
       : goal != null && !caught ? `Catching up to entry #${goal}`
         : `Last processed entry #${n.last_applied}${caught ? " · caught up" : ""}`;
+    const users = n.active_users || [];
+    const usersBadge = users.length ? `<span class="node-users" title="Connected users: ${display(users.join(', '))}">👤 ${display(users.join(', '))}</span>` : '';
     return `<button type="button" class="map-node ${n.online && n.state === "LEADER" ? "leader" : ""} ${role === "Stopped" ? "stopped" : ""}"
       aria-pressed="${selected === n.node_id}" data-node="${display(n.node_id)}">
-      <strong>${display(n.node_id)}</strong>${display(role)}<small class="${caught ? "caught" : ""}">${display(progress)}</small></button>`;
+      <strong>${display(n.node_id)}</strong>${display(role)}<small class="${caught ? "caught" : ""}">${display(progress)}</small>${usersBadge}</button>`;
   };
   const peers = nodes.filter(n => n.node_id !== leader?.node_id);
   const markup = nodes.length ? `<div class="map-leader">${leader ? button(leader) : '<span class="empty">No single leader observed</span>'}</div>
@@ -193,19 +196,22 @@ function observedMessages(events) {
   for (const event of [...events].sort(byTime)) {
     if (!event.request_id) continue;
     const appended = event.kind === "log_appended" && ["SEND_DM", "SEND_GROUP_MSG"].includes(event.command);
-    if (!appended && event.kind !== "demo_submitted") continue;
+    if (!appended && event.kind !== "demo_submitted" && event.kind !== "message_forwarded") continue;
     if (!messages.has(event.request_id)) messages.set(event.request_id, {});
     const message = messages.get(event.request_id);
     if (appended) {
       if (!message.entry || (message.entry.leader && !event.leader)) message.entry = event;
-    } else {
+    } else if (event.kind === "demo_submitted") {
       message.submission = event;
+    } else if (event.kind === "message_forwarded") {
+      message.forward = event;
     }
   }
   for (const [id, message] of messages) {
-    message.time = (message.submission || message.entry).time;
-    message.label = message.submission || id.startsWith("dashboard-") ? "Dashboard test message"
-      : message.entry.command === "SEND_DM" ? "Direct message" : "Group message";
+    message.time = (message.submission || message.forward || message.entry)?.time;
+    const preview = message.entry?.preview ? `: "${message.entry.preview}"` : "";
+    message.label = message.submission || id.startsWith("dashboard-") ? `Dashboard test message${preview}`
+      : `${message.entry?.command === "SEND_DM" ? "Direct message" : "Group message"}${preview}`;
   }
   return messages;
 }
@@ -235,9 +241,17 @@ function messageTrace() {
     picker.dataset.markup = markup;
   }
   get("trace-choice").hidden = !options.length;
+  if (!frozenTrace && options.length > 0) {
+    const latestId = options[0][0];
+    if (latestId && latestId !== lastAutoPickedId) {
+      pickedRequest = latestId;
+      lastAutoPickedId = latestId;
+    }
+  }
   if (!frozenTrace && demo?.request_id && demo.request_id !== lastDemoRequest) {
     pickedRequest = demo.request_id;
     lastDemoRequest = demo.request_id;
+    lastAutoPickedId = demo.request_id;
   }
   if (!options.some(([id]) => id === pickedRequest)) pickedRequest = options[0]?.[0] || "";
   picker.value = pickedRequest;
@@ -310,7 +324,7 @@ function renderMessageSteps() {
     ["Copied", copies.length ? `Replicated to ${copies.join(", ")}`
       : "Awaiting replication", copies.length > 0],
     ["Committed", quorum ? `Quorum reached by ${quorum.voters.join(", ")}`
-      : accepted ? "API confirmed · quorum details unavailable" : "Awaiting a write quorum", !!quorum],
+      : (accepted || applied.length) ? "Quorum committed" : "Awaiting a write quorum", !!(quorum || accepted || applied.length)],
     ["Applied", applied.length ? `Visible on ${applied.join(", ")}` : "Awaiting apply", applied.length > 0],
   ];
   renderSteps("message-steps", steps);
@@ -521,10 +535,16 @@ function render() {
   const leadership = leader ? `${leader.node_id} leads` : leaders.length > 1 ? "Multiple leaders reported" : "No leader observed";
   const votes = quorum ? `${votersOnline}/${membership.length} voters online` : "Voter state unknown";
   const replicas = nodes.length ? `${replicasOnline}/${nodes.length} replicas online` : "Awaiting replicas";
+  const allActiveUsers = nodes.flatMap(n => (n.active_users || []).map(u => ({ user: u, node: n.node_id })));
+  const uniqueUsers = [...new Set(allActiveUsers.map(x => x.user))];
+  const userSummary = uniqueUsers.length
+    ? `${uniqueUsers.length} user${uniqueUsers.length > 1 ? "s" : ""} online (${allActiveUsers.map(x => `${x.user}@${x.node}`).join(", ")})`
+    : "0 users online";
   get("metrics").innerHTML = `<span><strong>${display(leadership)}</strong></span><span>term ${display(term)}</span>
     <span>${display(replicas)}</span>
     <span class="${quorum && votersOnline < quorum ? "unavailable" : ""}">${display(votes)}</span>
-    <span>quorum ${display(quorum)}</span>`;
+    <span>quorum ${display(quorum)}</span>
+    <span>👤 ${display(userSummary)}</span>`;
   get("membership-note").textContent = membership.length
     ? (withRoles.some(n => !n.is_voter)
       ? "Voters elect and commit. Non-voting replicas copy the log and serve chat."

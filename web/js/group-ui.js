@@ -83,7 +83,10 @@ async function openManageGroupModal() {
 
       // Fill add member select with all registered users who aren't yet in this group
       const sel = document.getElementById("add-member-select");
-      const availableUsers = cachedUsers.filter(u => !memberIds.has(u.user_id));
+      const availableUsers = cachedUsers.filter(u => {
+        const name = (u.username || "").toLowerCase();
+        return !memberIds.has(u.user_id) && !name.startsWith("check_") && !name.startsWith("monitor_") && !name.startsWith("test_user_");
+      });
       if (availableUsers.length === 0) {
         sel.innerHTML = `<option value="">All registered users are already members</option>`;
       } else {

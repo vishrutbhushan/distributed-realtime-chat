@@ -50,7 +50,14 @@ const api = {
 
   async getUsers(token) {
     const res = await fetchWithFailover(`${API_BASE}/api/users?token=${encodeURIComponent(token)}`);
-    return res.json();
+    const data = await res.json();
+    if (data && data.success && Array.isArray(data.users)) {
+      data.users = data.users.filter(u => {
+        const name = (u.username || "").toLowerCase();
+        return !name.startsWith("check_") && !name.startsWith("monitor_") && !name.startsWith("test_user_");
+      });
+    }
+    return data;
   },
 
   async getGroups(token) {
@@ -71,6 +78,7 @@ const api = {
   },
 
   async sendDM(token, recipientUserId, content, fileId) {
+    const reqId = "user-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
     const res = await fetchWithFailover(`${API_BASE}/api/messages/dm`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -78,7 +86,7 @@ const api = {
         token,
         recipient_user_id: recipientUserId,
         content: content || "",
-        client_request_id: crypto.randomUUID(),
+        client_request_id: reqId,
         file_id: fileId || null,
       }),
     });
@@ -94,6 +102,7 @@ const api = {
   },
 
   async sendGroupMessage(token, groupId, content, fileId) {
+    const reqId = "user-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
     const res = await fetchWithFailover(`${API_BASE}/api/messages/group`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -101,7 +110,7 @@ const api = {
         token,
         group_id: groupId,
         content: content || "",
-        client_request_id: crypto.randomUUID(),
+        client_request_id: reqId,
         file_id: fileId || null,
       }),
     });

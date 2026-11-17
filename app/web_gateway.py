@@ -200,6 +200,7 @@ class WebGatewayHandler(BaseHTTPRequestHandler):
                         "last_message": getattr(u, "last_message", ""),
                     }
                     for u in resp.users
+                    if not (u.username.startswith("check_") or u.username.startswith("monitor_") or u.username.startswith("test_user_"))
                 ]
                 self._send_json(200, {"success": True, "users": users})
             except grpc.RpcError as e:
