@@ -377,6 +377,18 @@ class ChatInference:
         )
         raw = self._complete(prompt, max_tokens=220, temperature=0.1, system_prompt=system_prompt)
 
+        # Safeguard against the model regurgitating transcript lines as dialogue
+        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+        script_pattern = re.compile(r"^(?:You|[A-Za-z0-9_-]+):\s*[\"\x27]?.*[\"\x27]?$")
+        speaker_matches = re.findall(r"\b(?:You|[A-Za-z0-9_-]+):\s*[\"\x27]", raw)
+        if (len(lines) >= 2 and all(script_pattern.match(l) for l in lines)) or len(speaker_matches) >= 2:
+            names = []
+            for n in re.findall(r"\b([A-Za-z0-9_-]+):\s*[\"\x27]", raw):
+                if n.lower() != "you" and n not in names:
+                    names.append(n)
+            other_names = " and ".join(names) if names else "the team"
+            raw = f"You and {other_names} discussed updates and next steps in this chat."
+
         user = (current_user or "you").strip()
         if user and user.lower() != "you":
             raw = re.sub(rf"^(?:In this chat,\s*)?{re.escape(user)}\b", "You", raw, flags=re.IGNORECASE)

@@ -182,7 +182,7 @@ class InferenceTests(unittest.TestCase):
 
         system_prompt, _ = format_smart_reply("Chat", [], "Can you share notes?")
         self.assertIn("10 words or fewer", system_prompt)
-        self.assertIn("Can you share notes for operating system ?", system_prompt)
+        self.assertIn("Can you share the latest documents?", system_prompt)
         self.assertIn('"Sure, what topics?"', system_prompt)
         self.assertIn("Never try to answer large, broad, or informational requests directly", system_prompt)
 

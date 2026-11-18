@@ -15,14 +15,14 @@ Possible replies JSON:
 {{"replies":["Good, thanks! How about you?","Doing okay - how are you?","Pretty good! How's your day going?"]}}
 
 Example 2:
-Incoming message: Can you share notes for operating system ?
+Incoming message: Can you share the latest documents?
 Possible replies JSON:
-{{"replies":["Sure, what topics?","Let me check and send them over.","I don't have them with me right now."]}}
+{{"replies":["Sure, what topics?","Let me check and send them over.","I don't have them right now."]}}
 
 Example 3:
-Incoming message: Can you explain how Raft works?
+Incoming message: Can you walk me through the details?
 Possible replies JSON:
-{{"replies":["Sure, which part should we cover?","Let's hop on a quick call.","Check the docs or let's discuss later."]}}
+{{"replies":["Sure, which part should we cover?","Let's hop on a quick call.","Let's discuss it later today."]}}
 
 For the actual incoming message, write three distinct, standalone options. Each must answer or directly respond to it before optionally asking something back. Do not start a new topic or use a generic check-in as a substitute for a reply.
 Never try to answer large, broad, or informational requests directly (do not provide notes, tutorials, or explanations). Instead, provide natural conversational replies such as asking for clarification (e.g. 'Sure, what topics?', 'Which part?'), giving a quick status, or offering to discuss.
@@ -48,13 +48,14 @@ Rules:
 
 Example 1:
 Messages: You: Dinner today? Alex: Yes. You: Where? Alex: Olive's.
-Output: You and Alex agreed to have dinner today and discussed Olive's as the location.
+Summary: You asked Alex about having dinner today, and agreed on Olive's as the location.
 
 Example 2:
 Messages: Sarah: Are you free tomorrow? You: Yes, what time? Sarah: 3 PM.
-Output: Sarah asked if you are free tomorrow, and you agreed to meet at 3 PM.
+Summary: Sarah asked if you are free tomorrow, and you agreed to meet at 3 PM.
 
-Write the summary paragraph now:"""
+Write the summary paragraph now:
+Summary for {current_user}:"""
 
 
 CONTEXT_SUGGESTION_PROMPT = """\
