@@ -2,7 +2,7 @@ const get = id => document.getElementById(id);
 const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[char]);
-const display = value => escapeHTML(value ?? "—");
+const display = value => escapeHTML(value ?? "-");
 const clock = new Intl.DateTimeFormat(undefined, {
   hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3, hour12: false,
 });
@@ -42,7 +42,7 @@ function description(e) {
     case "leader_elected": return `Won term ${e.term} with ${e.voters.join(", ")}`;
     case "follower": return e.leader ? `Following ${e.leader} in term ${e.term}` : `Became follower in term ${e.term}`;
     case "log_appended": return `Stored ${e.command} at #${e.index}${e.leader ? " from " + e.leader : ""}`;
-    case "append_sent": return `Sent #${e.first}–${e.last} to ${e.peer}`;
+    case "append_sent": return `Sent #${e.first}-${e.last} to ${e.peer}`;
     case "append_ack": return `${e.peer} confirmed its log matches through #${e.index}`;
     case "commit_advanced": return `Committed through #${e.last}${e.voters ? " with " + e.voters.join(", ") : " after hearing from " + e.leader}`;
     case "entry_applied": return `${e.success ? "Applied" : "Could not apply"} ${e.command} at #${e.index}`;
@@ -424,7 +424,7 @@ function renderSequence() {
   if (event) {
     const rpc = sequenceLabel(event)[1];
     const facts = [rpc, event.term != null && `term ${event.term}`,
-      event.index != null ? `log #${event.index}` : event.last != null && `log #${event.first}–${event.last}`].filter(Boolean);
+      event.index != null ? `log #${event.index}` : event.last != null && `log #${event.first}-${event.last}`].filter(Boolean);
     detail.innerHTML = `<strong>${display(event.node)}</strong> · ${display(description(event))}${facts.length ? `<br><code>${display(facts.join(" · "))}</code>` : ""}`;
   }
 }
@@ -516,7 +516,7 @@ function renderRecovery() {
       : "Awaiting leader", !!run.joined_at, run.joined_at],
     ["Caught up", target == null ? "Awaiting a sync target"
       : complete ? `Applied through #${target}${received ? ` · received ${received} ${received === 1 ? "entry" : "entries"}` : ""}`
-        : `Applied #${run.last_applied ?? "—"} · target #${target}`,
+        : `Applied #${run.last_applied ?? "-"} · target #${target}`,
       complete, run.finished_at],
   ]);
 }

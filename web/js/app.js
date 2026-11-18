@@ -130,7 +130,10 @@ async function runEventStream(generation) {
     try {
       const response = await fetch(api.eventStreamUrl(currentUser.token), {
         method: "GET",
-        headers: { Accept: "text/event-stream" },
+        headers: {
+          Accept: "text/event-stream",
+          "X-Chat-Session": api.getTabSessionId(),
+        },
         cache: "no-store",
         signal: controller.signal,
       });

@@ -2,9 +2,7 @@ syntax = "proto3";
 
 package llm;
 
-// ─────────────────────────────────────────────────────────────
 // Generic LLM call
-// ─────────────────────────────────────────────────────────────
 
 message LLMRequest {
   string request_id = 1;
@@ -20,9 +18,7 @@ message LLMResponse {
   string error      = 4;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Feature 1: Smart Replies (over full chat history)
-// ─────────────────────────────────────────────────────────────
 
 message SmartReplyRequest {
   string          request_id      = 1;
@@ -38,9 +34,7 @@ message SmartReplyResponse {
   string          error       = 4;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Feature 2: Conversation Summarization (over full chat history)
-// ─────────────────────────────────────────────────────────────
 
 message SummarizeRequest {
   string          request_id   = 1;
@@ -56,9 +50,7 @@ message SummarizeResponse {
   string error      = 4;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Feature 3: Context Suggestion
-// ─────────────────────────────────────────────────────────────
 
 message ContextSuggestionRequest {
   string          request_id   = 1;
@@ -74,9 +66,7 @@ message ContextSuggestionResponse {
   string error      = 4;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Service Definition
-// ─────────────────────────────────────────────────────────────
 
 service LLMService {
   rpc GetLLMAnswer(LLMRequest)                       returns (LLMResponse);

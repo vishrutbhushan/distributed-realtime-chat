@@ -223,3 +223,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Presentations and presentation build scripts
+presentation/
+*.pptx

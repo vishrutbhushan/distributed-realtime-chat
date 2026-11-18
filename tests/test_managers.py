@@ -28,7 +28,7 @@ class ManagerTests(unittest.TestCase):
         self.db.close()
         self.temp_dir.cleanup()
 
-    # ── Auth & Presence Tests ─────────────────────────────────────────────────
+    # Auth & Presence Tests
 
     def test_signup_validation_and_duplicate_rejection(self):
         # Username too short
@@ -74,7 +74,7 @@ class ManagerTests(unittest.TestCase):
         # Validate token should now return None
         self.assertIsNone(self.auth.validate_token(token))
 
-    # ── Direct Messaging & Idempotency Tests ──────────────────────────────────
+    # Direct Messaging & Idempotency Tests
 
     def test_direct_messaging_and_history(self):
         _, t1, u1, _, _ = self.auth.signup("sender_user", "pass123")
@@ -115,7 +115,7 @@ class ManagerTests(unittest.TestCase):
         history = self.chat.get_dm_history(u1, u2)
         self.assertEqual(len(history), 1)
 
-    # ── Group Management & Admin Control Tests ────────────────────────────────
+    # Group Management & Admin Control Tests
 
     def test_group_creation_and_admin_permissions(self):
         _, _, u_admin, _, _ = self.auth.signup("group_admin", "pass123")
@@ -166,7 +166,7 @@ class ManagerTests(unittest.TestCase):
         roles = {m["user_id"]: m["role"] for m in members}
         self.assertEqual(roles[u_member1], "ADMIN")
 
-    # ── File Upload and Download Tests ────────────────────────────────────────
+    # File Upload and Download Tests
 
     def test_file_upload_and_download(self):
         _, _, u1, _, _ = self.auth.signup("file_owner", "pass123")
@@ -190,7 +190,7 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(downloaded_bytes, sample_bytes)
         self.assertEqual(downloaded_meta["filename"], "document.pdf")
 
-    # ── Unread Counts and Ordering Tests ──────────────────────────────────────
+    # Unread Counts and Ordering Tests
 
     def test_unread_count_and_ordering_metadata(self):
         _, _, u_a, _, _ = self.auth.signup("user_a", "pass123")

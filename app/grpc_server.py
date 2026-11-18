@@ -121,7 +121,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                         self.raft.propose("UPDATE_PRESENCE", payload)
             threading.Thread(target=_replicate, daemon=True).start()
 
-    # ── Raft Leader Forwarding Helper ─────────────────────────────────────────
+    # Raft Leader Forwarding Helper
 
     def _get_peer_app_stub(self, peer_id: str) -> Optional[chat_pb2_grpc.ChatServiceStub]:
         with self._stub_lock:
@@ -216,7 +216,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         if context is not None and result.get("applied_index"):
             context.set_trailing_metadata((("x-raft-applied-index", str(result["applied_index"])),))
 
-    # ── Authentication helpers ────────────────────────────────────────────────
+    # Authentication helpers
 
     @staticmethod
     def _client_kind(context) -> str:
@@ -255,7 +255,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             )
         return sess
 
-    # ── Authentication RPCs ───────────────────────────────────────────────────
+    # Authentication RPCs
 
     def Signup(self, request, context):
         if self._is_follower():
@@ -408,7 +408,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             message="Logged out successfully" if ok else "Logout failed",
         )
 
-    # ── Directory and presence RPCs ───────────────────────────────────────────
+    # Directory and presence RPCs
 
     def ListUsers(self, request, context):
         sess = self._require_auth(request.token, context)
@@ -450,7 +450,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             success=self.presence.request_status(request.token, request.status)
         )
 
-    # ── Direct messaging RPCs ─────────────────────────────────────────────────
+    # Direct messaging RPCs
 
     def SendDirectMessage(self, request, context):
         if self._is_follower():
@@ -528,7 +528,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             messages=[self._to_message_proto(m) for m in msgs]
         )
 
-    # ── Group management and messaging RPCs ───────────────────────────────────
+    # Group management and messaging RPCs
 
     def CreateGroup(self, request, context):
         if self._is_follower():
@@ -815,7 +815,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         self.chat.mark_as_read(sess["user_id"], request.chat_type, request.target_id)
         return chat_pb2.MarkReadResponse(success=True)
 
-    # ── Server-streaming message RPC ──────────────────────────────────────────
+    # Server-streaming message RPC
 
     def StreamMessages(self, request, context):
         sess = self._require_auth(request.token, context, record_activity=False)
@@ -917,7 +917,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             self.presence.disconnect_stream(stream_id)
             logger.info("[STREAM] User %s disconnected from event stream", sess["username"])
 
-    # ── File sharing RPCs ─────────────────────────────────────────────────────
+    # File sharing RPCs
 
     def _file_access_error(
         self,
@@ -1009,7 +1009,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             message="",
         )
 
-    # ── LLM-backed RPCs ───────────────────────────────────────────────────────
+    # LLM-backed RPCs
 
     def GetSmartReplies(self, request, context):
         sess = self._require_auth(request.token, context)
@@ -1144,7 +1144,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
                 request_id=rid, success=False, error=str(exc)
             )
 
-    # ── Explicit service signatures ───────────────────────────────────────────
+    # Explicit service signatures
 
     def Post(self, request, context):
         """Generic post: e.g. type='signup', 'login', 'send_dm', 'send_group'."""
@@ -1231,7 +1231,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
         except Exception as exc:
             return chat_pb2.BusinessResponse(request_id=request.request_id, status="ERROR", result=str(exc))
 
-    # ── Node status RPC ───────────────────────────────────────────────────────
+    # Node status RPC
 
     def GetNodeStatus(self, request, context):
         if self.raft:
@@ -1253,7 +1253,7 @@ class ChatServicer(chat_pb2_grpc.ChatServiceServicer):
             last_applied=0,
         )
 
-    # ── Message and file conversion helpers ───────────────────────────────────
+    # Message and file conversion helpers
 
     @staticmethod
     def _to_message_proto(m: dict) -> chat_pb2.Message:

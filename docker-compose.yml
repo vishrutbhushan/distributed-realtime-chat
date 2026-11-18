@@ -1,9 +1,7 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Distributed Real-time Chat and Collaboration Tool — Docker Compose
-# Milestone 2: Nginx Load Balancer + Docker DNS Service Discovery (6 Replicas)
-#   Web UI (Load Balanced): http://localhost:8000
-#   Scale dynamically     : docker compose up -d --scale app-node=N
-# ─────────────────────────────────────────────────────────────────────────────
+# Distributed Real-time Chat and Collaboration Tool
+# Nginx Load Balancer + Docker DNS Service Discovery (6 Replicas)
+#   Web UI: http://localhost:8000
+#   Scale : docker compose up -d --scale app-node=N
 
 services:
 
@@ -22,7 +20,7 @@ services:
     networks:
       - chat-net
 
-  # ── Nginx Cookie Affinity (Docker DNS Service Discovery) ───────────────────
+  # Nginx load balancer with session affinity
   nginx-lb:
     image: nginx:alpine
     container_name: nginx-lb
@@ -41,7 +39,7 @@ services:
       - chat-net
     restart: unless-stopped
 
-  # ── Dedicated Local LLM Server ─────────────────────────────────────────────
+  # Dedicated local LLM server
   llm-server:
     build:
       context: .
@@ -64,7 +62,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 3s
 
-  # ── Scaled Raft Application Node Service (Discovered via Docker DNS) ───────
+  # Raft application node service
   app-node:
     build:
       context: .

@@ -2,9 +2,7 @@ syntax = "proto3";
 
 package chat;
 
-// ─────────────────────────────────────────────────────────────
 // Auth RPCs & Messages
-// ─────────────────────────────────────────────────────────────
 
 message SignupRequest {
   string username = 1;
@@ -41,9 +39,7 @@ message LogoutResponse {
   string message = 2;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Directory & Presence
-// ─────────────────────────────────────────────────────────────
 
 message UserItem {
   string user_id           = 1;
@@ -83,9 +79,7 @@ message UpdatePresenceResponse {
   bool success = 1;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Message Data Structures
-// ─────────────────────────────────────────────────────────────
 
 message Message {
   string message_id        = 1;
@@ -114,9 +108,7 @@ message GetMessagesResponse {
   repeated Message messages = 1;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Direct Messaging (1-to-1)
-// ─────────────────────────────────────────────────────────────
 
 message SendDirectMessageRequest {
   string token             = 1;
@@ -133,9 +125,7 @@ message GetDirectMessagesRequest {
   int64  before_timestamp = 4;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Group Chat & Management
-// ─────────────────────────────────────────────────────────────
 
 message Group {
   string group_id          = 1;
@@ -216,9 +206,7 @@ message GetGroupMessagesRequest {
   int64  before_timestamp = 4;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Real-time Streaming
-// ─────────────────────────────────────────────────────────────
 
 message StreamMessagesRequest {
   string token = 1;
@@ -229,9 +217,7 @@ message MessageEvent {
   Message message    = 2;
 }
 
-// ─────────────────────────────────────────────────────────────
 // File Sharing (PDFs & Images)
-// ─────────────────────────────────────────────────────────────
 
 message FileMetadata {
   string file_id      = 1;
@@ -273,9 +259,7 @@ message DownloadFileResponse {
   string       message = 4;
 }
 
-// ─────────────────────────────────────────────────────────────
 // LLM AI Assistance (Smart Replies & Summarization)
-// ─────────────────────────────────────────────────────────────
 
 message SmartReplyRequest {
   string          token           = 1;
@@ -327,9 +311,7 @@ message ContextSuggestionResponse {
   string error      = 4;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Assignment Explicit Required RPC Signatures
-// ─────────────────────────────────────────────────────────────
 
 message PostRequest {
   string token = 1;
@@ -370,9 +352,7 @@ message BusinessResponse {
   string result     = 3;
 }
 
-// ─────────────────────────────────────────────────────────────
 // System / Node Status
-// ─────────────────────────────────────────────────────────────
 
 message GetNodeStatusRequest {}
 
@@ -395,9 +375,7 @@ message MarkReadResponse {
   bool success = 1;
 }
 
-// ─────────────────────────────────────────────────────────────
 // Service Definition
-// ─────────────────────────────────────────────────────────────
 
 service ChatService {
   // Auth

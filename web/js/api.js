@@ -4,10 +4,30 @@
 
 const API_BASE = "";
 
+function getTabSessionId() {
+  let sess = sessionStorage.getItem("tab_chat_session");
+  if (!sess) {
+    sess = "tab-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+    sessionStorage.setItem("tab_chat_session", sess);
+  }
+  return sess;
+}
+
+function resetTabSessionId() {
+  const sess = "tab-" + (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2)));
+  sessionStorage.setItem("tab_chat_session", sess);
+  return sess;
+}
+
 async function fetchWithFailover(url, options = {}, retries = 2) {
+  const customHeaders = {
+    "X-Chat-Session": getTabSessionId(),
+  };
+  const headers = Object.assign({}, customHeaders, options.headers || {});
+  const mergedOptions = Object.assign({}, options, { headers });
   for (let i = 0; i <= retries; i++) {
     try {
-      const res = await fetch(url, options);
+      const res = await fetch(url, mergedOptions);
       if (res.status >= 502 && i < retries) {
         await new Promise(r => setTimeout(r, 250 * (i + 1)));
         continue;
@@ -21,7 +41,16 @@ async function fetchWithFailover(url, options = {}, retries = 2) {
 }
 
 const api = {
+  getTabSessionId() {
+    return getTabSessionId();
+  },
+
+  resetTabSessionId() {
+    return resetTabSessionId();
+  },
+
   async signup(username, password) {
+    resetTabSessionId();
     const res = await fetchWithFailover(`${API_BASE}/api/signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -31,6 +60,7 @@ const api = {
   },
 
   async login(username, password) {
+    resetTabSessionId();
     const res = await fetchWithFailover(`${API_BASE}/api/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -45,6 +75,7 @@ const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
     });
+    resetTabSessionId();
     return res.json();
   },
 
@@ -66,7 +97,8 @@ const api = {
   },
 
   eventStreamUrl(token) {
-    return `${API_BASE}/api/events?token=${encodeURIComponent(token)}`;
+    const sess = getTabSessionId();
+    return `${API_BASE}/api/events?token=${encodeURIComponent(token)}&session_id=${encodeURIComponent(sess)}`;
   },
 
   async getDMs(token, otherUserId, signal) {

@@ -107,7 +107,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
         self._last_heartbeat_time = time.time()
         self._election_timeout = random.uniform(self.min_election_timeout, self.max_election_timeout)
 
-    # ── Dynamic Peer Registration & Port-Range Discovery ──────────────────────
+    # Dynamic Peer Registration & Port-Range Discovery
 
     def _connect_peer(self, node_id: str, addr: str):
         old_channel = self._peer_channels.pop(node_id, None)
@@ -228,7 +228,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             pass
         return False
 
-    # ── State Transitions & Background Loops ──────────────────────────────────
+    # State Transitions & Background Loops
 
     def _become_follower(self, term: int, leader_id: Optional[str] = None):
         changed = self.state != NodeState.FOLLOWER or term > self.current_term or leader_id != self.leader_id
@@ -289,7 +289,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                         self._pending_results[key] = {**res, "applied_index": entry.index}
                         self._pending_events[key].set()
 
-    # ── Elections & Replication ───────────────────────────────────────────────
+    # Elections & Replication
 
     def _vote_request(self, pid: str, term: int):
         return raft_pb2.RequestVoteArgs(**{
@@ -423,7 +423,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                     self._send_append_entries_all(is_heartbeat=True)
                     break
 
-    # ── Assignment Page 7 gRPC Handlers ───────────────────────────────────────
+    # Raft gRPC handlers
 
     def _candidate_log_is_up_to_date(self, request):
         return (request.last_log_term, request.last_log_index) >= (self.log.last_term(), self.log.last_index())
