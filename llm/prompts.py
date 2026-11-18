@@ -43,11 +43,16 @@ Rules:
 - Refer to {current_user} as "You" and other people by name.
 - Combine the messages into a narrative; do not repeat them line by line.
 - Never output a transcript, speaker labels, bullets, quotation marks, or a heading.
+- Never continue the conversation or write script dialogue.
 - Use only information present in the messages. Do not infer plans or facts.
 
-Example:
+Example 1:
 Messages: You: Dinner today? Alex: Yes. You: Where? Alex: Olive's.
 Output: You and Alex agreed to have dinner today and discussed Olive's as the location.
+
+Example 2:
+Messages: Sarah: Are you free tomorrow? You: Yes, what time? Sarah: 3 PM.
+Output: Sarah asked if you are free tomorrow, and you agreed to meet at 3 PM.
 
 Write the summary paragraph now:"""
 

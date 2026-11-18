@@ -368,8 +368,14 @@ class ChatInference:
     ) -> str:
         if not messages:
             return "No messages in this chat to summarize yet."
-        prompt = format_summarize(context_title, _bound_messages(messages), current_user=current_user)
-        raw = self._complete(prompt, max_tokens=220, temperature=0.1)
+        user = (current_user or "you").strip()
+        prompt = format_summarize(context_title, _bound_messages(messages), current_user=user)
+        system_prompt = (
+            f"You summarize team chat conversations into a concise narrative paragraph for {user}. "
+            "Write in continuous prose. Never continue the conversation, invent dialogue, or output speaker lines like 'You:' or 'User:'. "
+            "Output only the summary narrative paragraph."
+        )
+        raw = self._complete(prompt, max_tokens=220, temperature=0.1, system_prompt=system_prompt)
 
         user = (current_user or "you").strip()
         if user and user.lower() != "you":
@@ -380,6 +386,7 @@ class ChatInference:
             raw = re.sub(r"\byou was\b", "you were", raw)
             raw = re.sub(r"\bYou has\b", "You have", raw)
             raw = re.sub(r"\byou has\b", "you have", raw)
+        raw = re.sub(r"(?<!^)(?<![.!?]\s)\bYou\b", "you", raw)
 
         return raw
 
