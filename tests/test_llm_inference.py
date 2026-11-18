@@ -76,7 +76,7 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(user_message, "Can you check the logs?")
         self.assertEqual(user_message.count("Can you check the logs?"), 1)
         self.assertIn("casual team chat", system_prompt)
-        self.assertIn("18 words or fewer", system_prompt)
+        self.assertIn("10 words or fewer", system_prompt)
 
     def test_smart_reply_prompt_deduplicates_latest_history_message(self):
         system_prompt, user_message = format_smart_reply(
@@ -173,6 +173,18 @@ class InferenceTests(unittest.TestCase):
                 "2) Which section matters most?\n3) Send me the link."
             )
         )
+
+    def test_smart_replies_enforce_ten_word_limit(self):
+        ten_words = "one two three four five six seven eight nine ten"
+        eleven_words = "one two three four five six seven eight nine ten eleven"
+        self.assertIsNotNone(_parse_smart_replies(f'1) {ten_words}\n2) Yes.\n3) No.'))
+        self.assertIsNone(_parse_smart_replies(f'1) {eleven_words}\n2) Yes.\n3) No.'))
+
+        system_prompt, _ = format_smart_reply("Chat", [], "Can you share notes?")
+        self.assertIn("10 words or fewer", system_prompt)
+        self.assertIn("Can you share notes for operating system ?", system_prompt)
+        self.assertIn('"Sure, what topics?"', system_prompt)
+        self.assertIn("Never try to answer large, broad, or informational requests directly", system_prompt)
 
     def test_smart_replies_require_a_text_message(self):
         model = FakeModel()

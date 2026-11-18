@@ -57,6 +57,7 @@ services:
       LOG_FILE: "/logs/app.log"
     volumes:
       - ./logs:/logs
+      - ./llm:/app/llm:ro
     networks:
       - chat-net
     restart: unless-stopped

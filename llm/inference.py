@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_PATH = "/models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 MAX_CONTEXT_CHARS = 8000
-MAX_SMART_REPLY_WORDS = 18
+MAX_SMART_REPLY_WORDS = 10
 SMART_REPLY_RESPONSE_FORMAT = {"type": "json_object"}
 SMART_REPLY_GBNF = r'''
 root ::= "{" ws "\"replies\"" ws ":" ws "[" ws string ws "," ws string ws "," ws string ws "]" ws "}"
@@ -238,13 +238,16 @@ class ChatInference:
         if not self._slot.acquire(timeout=slot_timeout):
             logger.error("[LLM] completion_rejected reason=model_busy")
             raise RuntimeError("Local LLM is busy processing another request; retry shortly")
+        model_response_format = response_format
+        if grammar is not None and hasattr(self._model, "chat_format"):
+            model_response_format = None
         try:
             future = self._executor.submit(
                 self._model.create_chat_completion,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                response_format=response_format,
+                response_format=model_response_format,
                 grammar=grammar,
             )
         except Exception:

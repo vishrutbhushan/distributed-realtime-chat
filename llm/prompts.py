@@ -9,14 +9,25 @@ Chat: {context_title}
 Earlier messages (latest excluded):
 {context}
 
-Example:
+Example 1:
 Incoming message: hi hows things
 Possible replies JSON:
 {{"replies":["Good, thanks! How about you?","Doing okay - how are you?","Pretty good! How's your day going?"]}}
 
+Example 2:
+Incoming message: Can you share notes for operating system ?
+Possible replies JSON:
+{{"replies":["Sure, what topics?","Let me check and send them over.","I don't have them with me right now."]}}
+
+Example 3:
+Incoming message: Can you explain how Raft works?
+Possible replies JSON:
+{{"replies":["Sure, which part should we cover?","Let's hop on a quick call.","Check the docs or let's discuss later."]}}
+
 For the actual incoming message, write three distinct, standalone options. Each must answer or directly respond to it before optionally asking something back. Do not start a new topic or use a generic check-in as a substitute for a reply.
+Never try to answer large, broad, or informational requests directly (do not provide notes, tutorials, or explanations). Instead, provide natural conversational replies such as asking for clarification (e.g. 'Sure, what topics?', 'Which part?'), giving a quick status, or offering to discuss.
 Use relevant chat details without inventing facts, deadlines, or promises. Do not take over work assigned to someone else; ask if ownership is unclear.
-Keep every reply to 18 words or fewer. Return only a JSON object with a `replies` array containing exactly three strings. No markdown or explanation."""
+Keep every reply to 10 words or fewer. Return only a JSON object with a `replies` array containing exactly three strings. No markdown or explanation."""
 
 
 SUMMARIZE_PROMPT = """\
@@ -85,7 +96,7 @@ def format_smart_reply(
     if retry:
         system_prompt += (
             "\n\nThe previous response failed validation. "
-            "Return exactly three distinct strings in the JSON replies array."
+            "Return exactly three distinct strings in the JSON replies array (10 words or fewer each)."
         )
     return system_prompt, latest_content
 
