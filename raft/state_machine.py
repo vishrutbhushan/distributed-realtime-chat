@@ -16,11 +16,13 @@ LEFT JOIN files f ON m.file_id = f.file_id
 
 
 class StateMachine:
+    """Executes committed Raft log entries in order onto local SQLite tables and pushes SSE."""
     def __init__(self, db, auth_manager=None, chat_manager=None, file_manager=None):
         self.db, self.auth, self.chat, self.files = db, auth_manager, chat_manager, file_manager
         self.last_applied = 0
 
     def apply(self, entry) -> Dict[str, Any]:
+        """Dispatch committed LogEntry to its _on_<command_type> handler and advance last_applied."""
         cmd, p, idx = entry.command_type, entry.payload, entry.index
         logger.info("[STATE_MACHINE] Applying log_index=%d cmd=%s", idx, cmd)
         try:
@@ -33,6 +35,7 @@ class StateMachine:
         return res
 
     def _on_signup(self, p: dict, _idx: int) -> dict:
+        """Apply SIGNUP: persist user + session token across all replicas and refresh directory."""
         now = p.get("created_at", int(time.time()))
         with self.db.lock:
             self.db.execute(
@@ -50,6 +53,7 @@ class StateMachine:
         return {"success": True, "user_id": p["user_id"], "username": p["username"], "token": p.get("token", "")}
 
     def _on_login(self, p: dict, _idx: int) -> dict:
+        """Apply LOGIN: replicate session token and mark user active on every replica."""
         now = p.get("created_at", int(time.time()))
         with self.db.lock:
             self.db.execute(
@@ -63,6 +67,7 @@ class StateMachine:
         return {"success": True, "user_id": p["user_id"], "username": p.get("username", ""), "token": p["token"]}
 
     def _on_logout(self, p: dict, _idx: int) -> dict:
+        """Apply LOGOUT: delete token, mark inactive if no other sessions remain, and close SSE."""
         tok, uid, now = p.get("token", ""), p.get("user_id", ""), p.get("timestamp", int(time.time()))
         with self.db.lock:
             if tok:
@@ -78,6 +83,7 @@ class StateMachine:
         return {"success": True}
 
     def _on_update_presence(self, p: dict, _idx: int) -> dict:
+        """Apply UPDATE_PRESENCE: synchronize online/offline status and last_seen across cluster."""
         uid, st, now = p.get("user_id", ""), p.get("status", "active"), p.get("timestamp", int(time.time()))
         if uid:
             with self.db.lock:
@@ -88,8 +94,10 @@ class StateMachine:
         return {"success": True}
 
     def _insert_msg(self, chat_type: str, p: dict, idx: int) -> dict:
+        """Idempotently insert a DM or GROUP message with monotonic timestamp ordering."""
         req_id = p.get("client_request_id")
         with self.db.lock:
+            # Idempotency check: prevent duplicate insertion if client/follower retried
             if req_id:
                 ex = self.db.fetchone(_MSG_QUERY + " WHERE m.client_request_id = ?", (req_id,))
                 if ex:
@@ -99,6 +107,7 @@ class StateMachine:
                 lat = self.db.fetchone("SELECT COALESCE(MAX(timestamp),0) AS ts FROM messages WHERE chat_type='DM' AND ((sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?))", (s, r, r, s))
             else:
                 lat = self.db.fetchone("SELECT COALESCE(MAX(timestamp),0) AS ts FROM messages WHERE chat_type='GROUP' AND group_id=?", (p["group_id"],))
+            # Enforce strictly increasing timestamp within the conversation
             ts = max(int(p.get("timestamp", int(time.time() * 1000))), int(lat["ts"] or 0) + 1)
             self.db.execute(
                 "INSERT OR IGNORE INTO messages (message_id, chat_type, sender_id, recipient_id, group_id, content, file_id, timestamp, client_request_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -111,6 +120,7 @@ class StateMachine:
         return {"success": True, "message": msg}
 
     def _on_send_dm(self, p: dict, idx: int) -> dict:
+        """Apply SEND_DM: save message to SQLite and push NEW_MESSAGE SSE to local subscribers."""
         res = self._insert_msg("DM", p, idx)
         if self.chat and res.get("message"):
             m = res["message"]
@@ -120,6 +130,7 @@ class StateMachine:
         return res
 
     def _on_send_group_msg(self, p: dict, idx: int) -> dict:
+        """Apply SEND_GROUP_MSG: save message to SQLite and push SSE to all group members on this node."""
         res = self._insert_msg("GROUP", p, idx)
         if self.chat and res.get("message"):
             m = res["message"]
@@ -129,6 +140,7 @@ class StateMachine:
         return res
 
     def _on_create_group(self, p: dict, _idx: int) -> dict:
+        """Apply CREATE_GROUP: insert group, set creator as ADMIN, and add initial members."""
         gid, name, cid, now = p["group_id"], p["name"], p["creator_id"], p.get("created_at", int(time.time()))
         with self.db.lock:
             self.db.execute("INSERT OR IGNORE INTO groups (group_id, name, created_by, created_at) VALUES (?, ?, ?, ?)", (gid, name, cid, now))
@@ -140,6 +152,7 @@ class StateMachine:
         return self._group_summary(gid, notify_members=True)
 
     def _on_update_group(self, p: dict, _idx: int) -> dict:
+        """Apply UPDATE_GROUP: handle RENAME, ADD_MEMBER, REMOVE_MEMBER, MAKE_ADMIN & revoke SSE access."""
         gid, act, tid, now = p["group_id"], p["action"].upper(), p.get("target_user_id"), int(time.time())
         old_m = {r["user_id"] for r in self.db.fetchall("SELECT user_id FROM group_members WHERE group_id = ?", (gid,))}
         with self.db.lock:
@@ -161,6 +174,7 @@ class StateMachine:
         return res
 
     def _group_summary(self, gid: str, notify_members: bool = False) -> dict:
+        """Build group metadata response and optionally broadcast directory refresh to members."""
         grp = self.db.fetchone("SELECT * FROM groups WHERE group_id = ?", (gid,))
         cnt = self.db.fetchone("SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?", (gid,))
         cr = self.db.fetchone("SELECT username FROM users WHERE user_id = ?", (grp["created_by"],)) if grp else None
@@ -169,6 +183,7 @@ class StateMachine:
         return {"success": True, "group": {"group_id": gid, "name": grp["name"] if grp else "", "created_by": grp["created_by"] if grp else "", "created_by_name": cr["username"] if cr else "", "created_at": grp["created_at"] if grp else 0, "member_count": cnt["c"] if cnt else 1, "user_role": "ADMIN"}}
 
     def _on_upload_file_meta(self, p: dict, _idx: int) -> dict:
+        """Apply UPLOAD_FILE_META: write base64 file bytes to local disk and insert file metadata row."""
         fid, loc = p["file_id"], p["storage_location"]
         if self.files and getattr(self.files, "storage_path", None):
             os.makedirs(self.files.storage_path, exist_ok=True)
@@ -185,4 +200,5 @@ class StateMachine:
         return {"success": True, "file": {k: v for k, v in p.items() if k != "data_b64"}}
 
     def _on_business_request(self, p: dict, _idx: int) -> dict:
+        """Apply BUSINESS_REQUEST: handle assignment's generic ProcessBusinessRequest via Raft."""
         return {"success": True, "request_id": p.get("request_id", ""), "status": "COMPLETED", "result": f"Processed business request: {p.get('payload', '')}"}

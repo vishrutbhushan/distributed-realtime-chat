@@ -104,12 +104,14 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             self._become_leader()
 
     def _reset_election_timer(self):
+        """Reset last heartbeat timestamp and pick a new random election timeout (150ms-350ms)."""
         self._last_heartbeat_time = time.time()
         self._election_timeout = random.uniform(self.min_election_timeout, self.max_election_timeout)
 
     # Dynamic Peer Registration & Port-Range Discovery
 
     def _connect_peer(self, node_id: str, addr: str):
+        """Open a gRPC channel and RaftServiceStub to a peer replica."""
         old_channel = self._peer_channels.pop(node_id, None)
         if old_channel is not None:
             old_channel.close()
@@ -217,6 +219,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             time.sleep(1.5)
 
     def _probe_and_join(self, target_raft_addr: str, my_info, default_app_addr: str = ""):
+        """Send AddPeer RPC to a discovered peer and register returned cluster members."""
         try:
             with grpc.insecure_channel(target_raft_addr, options=_GRPC_OPTS) as channel:
                 reply = raft_pb2_grpc.RaftServiceStub(channel).AddPeer(my_info, timeout=0.3)
@@ -231,6 +234,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
     # State Transitions & Background Loops
 
     def _become_follower(self, term: int, leader_id: Optional[str] = None):
+        """Step down to FOLLOWER, persist higher term, clear voted_for, and reset election timer."""
         changed = self.state != NodeState.FOLLOWER or term > self.current_term or leader_id != self.leader_id
         self.state = NodeState.FOLLOWER
         self._pre_vote_round += 1
@@ -243,14 +247,17 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             self.telemetry.emit("follower", self.current_term, leader=leader_id)
 
     def _become_leader(self):
+        """Promote to LEADER after winning quorum, init next_index/match_index, and append NOOP."""
         self.state, self.leader_id = NodeState.LEADER, self.node_id
         last_idx = self.log.last_index()
+        # Initialize next_index to (last_log_index + 1) and match_index to 0 for all peers
         for pid in self.peers:
             if pid != self.node_id:
                 self.next_index[pid] = last_idx + 1
                 self.match_index[pid] = 0
         logger.info("[RAFT] Node %s -> LEADER for term %d", self.node_id, self.current_term)
         self.telemetry.emit("leader_elected", self.current_term, voters=sorted(getattr(self, "_votes", {self.node_id})))
+        # Append NOOP in new term so Leader can transitively commit entries from older terms
         entry = self.log.append(self.current_term, "NOOP", {})
         self._trace_entry("log_appended", entry)
         if self.quorum == 1:
@@ -260,17 +267,21 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
         self._send_append_entries_all(is_heartbeat=True)
 
     def _run_ticker(self):
+        """Background timer thread (20ms tick): sends 50ms Leader heartbeats or triggers election on timeout."""
         while self._running:
             time.sleep(0.02)
             with self._lock:
                 elapsed = time.time() - self._last_heartbeat_time
+                # LEADER: broadcast periodic AppendEntries heartbeat every 50ms
                 if self.state == NodeState.LEADER and elapsed >= self.heartbeat_interval:
                     self._last_heartbeat_time = time.time()
                     self._send_append_entries_all(is_heartbeat=True)
+                # FOLLOWER/CANDIDATE: start Pre-Vote if election timeout (150-350ms) expires
                 elif self.state != NodeState.LEADER and elapsed >= self._election_timeout:
                     self._start_pre_vote()
 
     def _run_applier(self):
+        """Background applier thread: executes committed entries (last_applied+1 .. commit_index) on StateMachine."""
         while self._running:
             with self._lock:
                 while self.commit_index <= self.last_applied and self._running:
@@ -284,6 +295,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                     self.last_applied = entry.index
                     self._apply_cv.notify_all()
                     self._trace_entry("entry_applied", entry, success=bool(res.get("success")))
+                    # Unblock any waiting propose() call on the Leader once applied
                     key = (entry.term, entry.index)
                     if key in self._pending_events:
                         self._pending_results[key] = {**res, "applied_index": entry.index}
@@ -292,12 +304,14 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
     # Elections & Replication
 
     def _vote_request(self, pid: str, term: int):
+        """Build RequestVoteArgs containing candidate term, last_log_index, and last_log_term."""
         return raft_pb2.RequestVoteArgs(**{
             "from": self.node_id, "to": pid, "term": term,
             "last_log_index": self.log.last_index(), "last_log_term": self.log.last_term(),
         })
 
     def _start_pre_vote(self):
+        """Phase 1 of election: ask voters if they would vote for us in (term + 1) before bumping term."""
         self.leader_id = None
         self._reset_election_timer()
         if self.node_id not in self.voter_ids:
@@ -315,6 +329,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                 self._rpc_executor.submit(self._pre_vote_rpc, pid, stub, args, round_id)
 
     def _pre_vote_rpc(self, pid: str, stub, args, round_id: int):
+        """Handle PreVote reply; once quorum (4/6) pre-votes are granted, start real election."""
         try:
             reply = stub.PreVote(args, timeout=0.15)
             with self._lock:
@@ -331,6 +346,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             pass
 
     def _start_election(self):
+        """Phase 2 of election: become CANDIDATE, increment term, vote for self, and send RequestVote RPCs."""
         self._pre_vote_round += 1
         self.state = NodeState.CANDIDATE
         self.current_term += 1
@@ -350,6 +366,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                 self._rpc_executor.submit(self._vote_rpc, pid, stub, args)
 
     def _vote_rpc(self, pid: str, stub, args):
+        """Handle RequestVoteReply; promote to LEADER as soon as quorum (4/6) votes are collected."""
         try:
             rep = stub.RequestVote(args, timeout=0.15)
             with self._lock:
@@ -366,6 +383,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             pass
 
     def _send_append_entries_all(self, is_heartbeat: bool = False):
+        """Broadcast AppendEntries (heartbeats and/or missing log entries from next_index) to all peers."""
         if self.state != NodeState.LEADER or not self._running:
             return
         for pid, stub in list(self._peer_stubs.items()):
@@ -388,6 +406,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                 self._append_in_flight.discard(pid)
 
     def _append_rpc(self, pid: str, stub, args):
+        """Process AppendEntriesReply: advance match_index on success, or decrement next_index to heal lag."""
         try:
             rep = stub.AppendEntries(args, timeout=0.15)
             with self._lock:
@@ -403,6 +422,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                     self.next_index[pid] = matched + 1
                     self._advance_commit_index()
                 else:
+                    # Follower rejected prev_index/prev_term: backtrack next_index to find matching prefix
                     self.next_index[pid] = max(1, self.next_index.get(pid, 1) - 1)
         except Exception:
             pass
@@ -411,6 +431,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                 self._append_in_flight.discard(pid)
 
     def _advance_commit_index(self):
+        """Commit highest current-term log entry replicated on a quorum (4/6) of voters."""
         for idx in range(self.log.last_index(), self.commit_index, -1):
             if self.log.term_at(idx) == self.current_term:
                 replicas = 1 + sum(1 for p in self.voter_ids if p != self.node_id and self.match_index.get(p, 0) >= idx)
@@ -419,6 +440,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                     self.commit_index = idx
                     voters = sorted(p for p in self.voter_ids if p == self.node_id or self.match_index.get(p, 0) >= idx)
                     self.telemetry.emit("commit_advanced", self.current_term, first=previous + 1, last=idx, voters=voters)
+                    # Wake up applier thread and immediately notify followers of new commit_index
                     self._apply_cv.notify_all()
                     self._send_append_entries_all(is_heartbeat=True)
                     break
@@ -426,9 +448,11 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
     # Raft gRPC handlers
 
     def _candidate_log_is_up_to_date(self, request):
+        """Raft Election Safety: compare (last_log_term, last_log_index) against local log."""
         return (request.last_log_term, request.last_log_index) >= (self.log.last_term(), self.log.last_index())
 
     def PreVote(self, request, context):
+        """gRPC PreVote handler: grant only if no recent leader heartbeat and candidate log is up-to-date."""
         with self._lock:
             sender = getattr(request, "from")
             leader_recently_seen = self.leader_id and time.time() - self._last_heartbeat_time < self._election_timeout
@@ -442,6 +466,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             })
 
     def RequestVote(self, request, context):
+        """gRPC RequestVote handler: grant at most one vote per term to an up-to-date candidate."""
         with self._lock:
             sender = getattr(request, "from")
             if self.node_id not in self.voter_ids or sender not in self.voter_ids or request.term < self.current_term:
@@ -459,10 +484,12 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             return raft_pb2.RequestVoteReply(**{"from": self.node_id, "to": sender, "term": self.current_term, "vote_granted": bool(can_vote and log_ok)})
 
     def AppendEntries(self, request, context):
+        """gRPC AppendEntries handler: reset election timer, verify prev_index/prev_term, append entries, and advance commit_index."""
         with self._lock:
             sender = getattr(request, "from")
             if sender not in self.voter_ids or request.term < self.current_term:
                 return raft_pb2.AppendEntriesReply(**{"from": self.node_id, "to": sender, "term": self.current_term, "entry_appended": False, "match_index": self.log.last_index()})
+            # Recognize valid Leader and reset election timeout (Heartbeat effect)
             if request.term > self.current_term or self.state != NodeState.FOLLOWER:
                 self._become_follower(request.term, sender)
             else:
@@ -472,12 +499,14 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                 self._pre_vote_round += 1
                 self._reset_election_timer()
 
+            # Log Matching Check: reject if missing prev_index or term mismatch at prev_index
             if request.prev_index > 0:
                 if self.log.last_index() < request.prev_index:
                     return raft_pb2.AppendEntriesReply(**{"from": self.node_id, "to": sender, "term": self.current_term, "entry_appended": False, "match_index": self.log.last_index()})
                 if self.log.term_at(request.prev_index) != request.prev_term:
                     return raft_pb2.AppendEntriesReply(**{"from": self.node_id, "to": sender, "term": self.current_term, "entry_appended": False, "match_index": self.log.last_index()})
 
+            # Append new entries (truncating any conflicting uncommitted suffix first)
             for e in request.entries:
                 ex = self.log.get(e.index)
                 if ex and ex.term == e.term:
@@ -488,6 +517,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
                 self.log.append_entry(entry)
                 self._trace_entry("log_appended", entry, leader=sender)
 
+            # Advance follower commit_index and wake up applier thread
             matched = request.entries[-1].index if request.entries else request.prev_index
             if min(request.commit_index, matched) > self.commit_index:
                 previous = self.commit_index
@@ -497,6 +527,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             return raft_pb2.AppendEntriesReply(**{"from": self.node_id, "to": sender, "term": self.current_term, "entry_appended": True, "match_index": matched})
 
     def propose(self, command_type: str, payload: dict, request_id: str = "", timeout: float = 4.0) -> Tuple[bool, str, Optional[str], dict]:
+        """Submit a client write to the Leader: append to log, replicate to quorum, and wait until applied."""
         with self._lock:
             if self.state != NodeState.LEADER:
                 return False, f"Not leader (leader={self.leader_id})", self.leader_id, {}
@@ -516,15 +547,18 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
         return (True, "", self.node_id, res) if ok else (False, f"Raft proposal timed out after {timeout}s", self.node_id, {})
 
     def status(self) -> dict:
+        """Return current node role, term, leader_id, commit_index, and last_applied."""
         with self._lock:
             return {"node_id": self.node_id, "state": self.state.value, "term": self.current_term, "leader_id": self.leader_id or "", "commit_index": self.commit_index, "last_applied": self.last_applied, "peers": list(self.peers.keys())}
 
     def wait_applied(self, index: int, timeout: float) -> bool:
+        """Wait until local StateMachine has applied up to index (Read-Your-Own-Writes consistency)."""
         with self._apply_cv:
             self._apply_cv.wait_for(lambda: self.last_applied >= index or not self._running, timeout)
             return self.last_applied >= index
 
     def _trace_entry(self, kind, entry, **fields):
+        """Emit telemetry event with a short message preview for the dashboard."""
         preview = ""
         if isinstance(entry.payload, dict):
             preview = str(entry.payload.get("content", ""))[:32]
@@ -534,6 +568,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
         )
 
     def monitor(self, after, boot):
+        """Return live telemetry snapshot for the Raft Observatory (/internal/raft-monitor)."""
         active_users = self.active_users_fn() if getattr(self, "active_users_fn", None) else []
         with self._lock:
             return {
@@ -547,6 +582,7 @@ class RaftNode(raft_pb2_grpc.RaftServiceServicer):
             }
 
     def stop(self):
+        """Gracefully stop background threads, RPC executor, and gRPC peer channels."""
         self._running = False
         with self._apply_cv:
             self._apply_cv.notify_all()

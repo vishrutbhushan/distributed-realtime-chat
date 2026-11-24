@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class LogEntry:
+    """Single entry in the persistent Raft write-ahead log (1-based index)."""
     index: int
     term: int
     command_type: str
@@ -14,6 +15,7 @@ class LogEntry:
     request_id: str = ""
 
     def __post_init__(self):
+        # Normalize index/term to int and ensure payload is parsed from JSON string to dict
         self.index = int(self.index)
         self.term = int(self.term)
         self.request_id = self.request_id or ""
@@ -24,46 +26,57 @@ class LogEntry:
                 self.payload = {"raw": self.payload}
 
     def to_dict(self) -> dict:
+        """Convert LogEntry dataclass to a standard dictionary."""
         return asdict(self)
 
 
 class RaftLog:
+    """Manages Raft persistent state on disk (current_term, voted_for, and log[]) in SQLite."""
     def __init__(self, db):
         self.db = db
 
     def _get_meta(self, key: str, default: str = "") -> str:
+        """Read a key ('current_term' or 'voted_for') from the raft_meta table."""
         with self.db.lock:
             row = self.db.fetchone("SELECT value FROM raft_meta WHERE key = ?", (key,))
             return row["value"] if row else default
 
     def _set_meta(self, **items):
+        """Atomically persist one or more metadata keys into raft_meta."""
         with self.db.lock:
             for k, v in items.items():
                 self.db.execute("INSERT OR REPLACE INTO raft_meta (key, value) VALUES (?, ?)", (k, str(v or "")))
             self.db.commit()
 
     def get_current_term(self) -> int:
+        """Load persisted current_term from SQLite (defaults to 0 on first boot)."""
         return int(self._get_meta("current_term", "0") or 0)
 
     def set_current_term(self, term: int):
+        """Persist updated current_term to SQLite."""
         self._set_meta(current_term=term)
 
     def get_voted_for(self) -> Optional[str]:
+        """Load candidate_id voted for in current_term (None if not voted yet)."""
         val = self._get_meta("voted_for", "")
         return val if val else None
 
     def set_voted_for(self, candidate_id: Optional[str]):
+        """Persist voted_for to disk before granting a vote to prevent double-voting."""
         self._set_meta(voted_for=candidate_id or "")
 
     def update_term_and_vote(self, term: int, voted_for: Optional[str]):
+        """Atomically update both current_term and voted_for in one SQLite commit."""
         self._set_meta(current_term=term, voted_for=voted_for or "")
 
     def append(self, term: int, command_type: str, payload: dict, request_id: str = "") -> LogEntry:
+        """Leader helper: create and persist a new LogEntry at (last_index + 1)."""
         entry = LogEntry(self.last_index() + 1, term, command_type, payload, request_id)
         self.append_entry(entry)
         return entry
 
     def append_entry(self, entry: LogEntry):
+        """Write a LogEntry row into the SQLite raft_log table."""
         with self.db.lock:
             self.db.execute(
                 "INSERT OR REPLACE INTO raft_log (log_index, term, command_type, payload, request_id) VALUES (?, ?, ?, ?, ?)",
@@ -72,28 +85,34 @@ class RaftLog:
             self.db.commit()
 
     def get(self, index: int) -> Optional[LogEntry]:
+        """Fetch the LogEntry at a specific 1-based log_index (None if missing)."""
         if index <= 0:
             return None
         row = self.db.fetchone("SELECT * FROM raft_log WHERE log_index = ?", (index,))
         return LogEntry(row["log_index"], row["term"], row["command_type"], row["payload"], row["request_id"]) if row else None
 
     def last_index(self) -> int:
+        """Return the highest log_index stored in raft_log (0 if empty)."""
         row = self.db.fetchone("SELECT MAX(log_index) AS mx FROM raft_log")
         return int(row["mx"]) if (row and row["mx"] is not None) else 0
 
     def last_term(self) -> int:
+        """Return the term of the last log entry (0 if empty); used for election safety check."""
         row = self.db.fetchone("SELECT term FROM raft_log ORDER BY log_index DESC LIMIT 1")
         return int(row["term"]) if row else 0
 
     def term_at(self, index: int) -> int:
+        """Return the term at a given index (0 if missing); used for prev_term log matching."""
         e = self.get(index)
         return e.term if e else 0
 
     def entries_from(self, start_index: int) -> List[LogEntry]:
+        """Fetch all log entries from start_index onward to batch-replicate to followers."""
         rows = self.db.fetchall("SELECT * FROM raft_log WHERE log_index >= ? ORDER BY log_index ASC", (max(1, start_index),))
         return [LogEntry(r["log_index"], r["term"], r["command_type"], r["payload"], r["request_id"]) for r in rows]
 
     def truncate_from(self, index: int):
+        """Delete conflicting uncommitted entries from index onward during log healing."""
         if index > 0:
             with self.db.lock:
                 self.db.execute("DELETE FROM raft_log WHERE log_index >= ?", (index,))

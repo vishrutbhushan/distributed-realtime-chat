@@ -7,13 +7,16 @@ from uuid import uuid4
 
 
 class RaftTelemetry:
+    """Ring-buffer event recorder exposed to the Raft Observatory dashboard (:8088)."""
     def __init__(self):
+        # Unique boot ID detects container restarts; bounded deque keeps last 512 events
         self.boot = uuid4().hex
         self._events = deque(maxlen=512)
         self._sequence = 0
         self._lock = Lock()
 
     def emit(self, kind, term, **fields):
+        """Record a Raft event (election, vote, append, commit, apply) with monotonic seq."""
         with self._lock:
             self._sequence += 1
             self._events.append({
@@ -22,6 +25,7 @@ class RaftTelemetry:
             })
 
     def read(self, after, boot):
+        """Return incremental events with seq > after (resets cursor if node rebooted)."""
         with self._lock:
             if boot != self.boot:
                 after = 0
